@@ -11,9 +11,10 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 
 const scene = new THREE.Scene();
 
-// The fog colour matches the sky at the horizon, so the far edge of the land melts away.
-const HORIZON_COLOR = 0xffcfa0;
-scene.fog = new THREE.Fog(HORIZON_COLOR, 120, 900);
+// DAY colours. The fog colour matches the sky at the horizon,
+// so the far edge of the land melts away.
+const HORIZON_COLOR = 0xcfe9f7;
+scene.fog = new THREE.Fog(HORIZON_COLOR, 150, 1000);
 
 const camera = new THREE.PerspectiveCamera(
   65,
@@ -32,13 +33,13 @@ const SKY_RADIUS = 1500;
 const skyGroup = new THREE.Group();
 scene.add(skyGroup);
 
-// Gradient dome: warm orange at the horizon, soft pink in the middle, light blue on top.
+// Gradient dome: pale blue at the horizon, soft sky blue in the middle, deeper blue on top.
 const skyGeo = new THREE.SphereGeometry(SKY_RADIUS, 48, 24);
 const skyPos = skyGeo.attributes.position;
 const skyColors = [];
-const cHorizon = new THREE.Color(0xffcfa0);
-const cMiddle = new THREE.Color(0xffb0a8);
-const cTop = new THREE.Color(0x86b9e8);
+const cHorizon = new THREE.Color(0xcfe9f7);
+const cMiddle = new THREE.Color(0xa6d8f2);
+const cTop = new THREE.Color(0x5aaae6);
 const tmp = new THREE.Color();
 
 for (let i = 0; i < skyPos.count; i++) {
@@ -65,13 +66,13 @@ sky.frustumCulled = false;
 sky.renderOrder = -1;
 skyGroup.add(sky);
 
-// The rising sun: a bright core and a soft glow around it.
-const sunDirection = new THREE.Vector3(0.25, 0.12, -1).normalize();
+// The daytime sun: high in the sky, a bright core and a soft glow around it.
+const sunDirection = new THREE.Vector3(0.3, 0.75, -0.6).normalize();
 const sunPosition = sunDirection.clone().multiplyScalar(1200);
 
 const sunCore = new THREE.Mesh(
   new THREE.SphereGeometry(55, 24, 16),
-  new THREE.MeshBasicMaterial({ color: 0xfff3c4, fog: false })
+  new THREE.MeshBasicMaterial({ color: 0xfff6c8, fog: false })
 );
 sunCore.position.copy(sunPosition);
 skyGroup.add(sunCore);
@@ -79,7 +80,7 @@ skyGroup.add(sunCore);
 const sunGlow = new THREE.Mesh(
   new THREE.SphereGeometry(115, 24, 16),
   new THREE.MeshBasicMaterial({
-    color: 0xffc27a,
+    color: 0xffe9a0,
     transparent: true,
     opacity: 0.3,
     fog: false,
@@ -92,9 +93,9 @@ skyGroup.add(sunGlow);
 // Puffy cartoon clouds (a few soft blobs each, sharing one shape and one material).
 const clouds = new THREE.Group();
 const cloudMaterial = new THREE.MeshLambertMaterial({
-  color: 0xfff0ea,
-  emissive: 0xffc9b0,
-  emissiveIntensity: 0.35
+  color: 0xffffff,
+  emissive: 0xdde8f5,
+  emissiveIntensity: 0.4
 });
 const puffGeometry = new THREE.SphereGeometry(1, 12, 10);
 
@@ -124,12 +125,12 @@ scene.add(clouds);
 // =====================================================
 // 3. LIGHTING (soft and warm, cheap for phones)
 // =====================================================
-// Sky light from above (warm pink) and bounce light from the grass below (green).
-const hemiLight = new THREE.HemisphereLight(0xffe0cc, 0x9bd36b, 2.6);
+// Sky light from above (white-blue) and bounce light from the grass below (green).
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x9bd36b, 2.4);
 scene.add(hemiLight);
 
-// The low sunrise sun, shining from the sun's direction.
-const sunLight = new THREE.DirectionalLight(0xffb870, 2.0);
+// The warm daytime sun, shining from the sun's direction.
+const sunLight = new THREE.DirectionalLight(0xfff0cc, 2.2);
 sunLight.position.copy(sunDirection).multiplyScalar(100);
 scene.add(sunLight);
 
@@ -185,7 +186,7 @@ scene.add(ground);
 // =====================================================
 const RIVER_WIDTH = 24;
 
-// Where the middle of the river is, for any z position. Phase 3+ will reuse this.
+// Where the middle of the river is, for any z position. Later phases will reuse this.
 function riverX(z) {
   return 140 + 35 * Math.sin(z * 0.008);
 }
@@ -265,15 +266,41 @@ scene.add(squareRing);
 // =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
-const EYE_HEIGHT = 1.7;
-const player = { x: 0, z: 45, yaw: 0, pitch: 0.1 };
+const EYE_HEIGHT = 1.7;      // how high your eyes are above the ground when walking
+const MAX_ALTITUDE = 100;    // the highest you can fly above the ground (metres)
+
+// player.y is the height of your eyes above the ground.
+const player = { x: 0, y: EYE_HEIGHT, z: 45, yaw: 0, pitch: 0.1 };
+
+// Fly mode state
+let flying = false;   // true while in fly mode
+let landing = false;  // true while gently coming down to land
+let vy = 0;           // up/down speed
+const vel = { x: 0, z: 0 }; // sideways speed (used to make flying smooth)
+
+// Touch buttons for up/down (true while a finger is holding them)
+let touchUp = false;
+let touchDown = false;
 
 let started = false;     // becomes true when you press "Enter the World"
 const keys = new Set();  // which keyboard keys are held down
 
-window.addEventListener('keydown', (e) => keys.add(e.code));
+window.addEventListener('keydown', (e) => {
+  keys.add(e.code);
+
+  if (e.code === 'Space') e.preventDefault(); // stop the page from scrolling
+
+  // F toggles fly mode (ignore key repeat, and Ctrl+F / Cmd+F which is "find")
+  if (started && e.code === 'KeyF' && !e.repeat && !e.ctrlKey && !e.metaKey) {
+    toggleFly();
+  }
+});
 window.addEventListener('keyup', (e) => keys.delete(e.code));
-window.addEventListener('blur', () => keys.clear());
+window.addEventListener('blur', () => {
+  keys.clear();
+  touchUp = false;
+  touchDown = false;
+});
 
 // --- Looking around (mouse drag or finger drag on the canvas) ---
 let lookId = null;
@@ -348,6 +375,55 @@ joystick.addEventListener('pointercancel', (e) => {
   if (e.pointerId === joyId) resetStick();
 });
 
+// --- Fly buttons (touch) ---
+const flyButtons = document.getElementById('flyButtons');
+const flyBtn = document.getElementById('flyBtn');
+const upBtn = document.getElementById('upBtn');
+const downBtn = document.getElementById('downBtn');
+
+flyBtn.addEventListener('click', () => {
+  if (started) toggleFly();
+});
+
+// Up and Down buttons work while a finger is holding them.
+function holdButton(button, setValue) {
+  button.addEventListener('pointerdown', (e) => {
+    button.setPointerCapture(e.pointerId);
+    button.classList.add('pressed');
+    setValue(true);
+  });
+  const release = () => {
+    button.classList.remove('pressed');
+    setValue(false);
+  };
+  button.addEventListener('pointerup', release);
+  button.addEventListener('pointercancel', release);
+  button.addEventListener('lostpointercapture', release);
+}
+holdButton(upBtn, (v) => { touchUp = v; });
+holdButton(downBtn, (v) => { touchDown = v; });
+
+// --- Turning fly mode on and off ---
+function toggleFly() {
+  if (!flying) {
+    // Take off: a small push upward so we leave the ground.
+    flying = true;
+    landing = false;
+    vy = 4;
+  } else {
+    // Press again while flying: start landing. Press again while landing: cancel landing.
+    landing = !landing;
+  }
+  updateFlyUI();
+}
+
+function updateFlyUI() {
+  flyBtn.textContent = flying && !landing ? 'Land' : 'Fly';
+  const showUpDown = flying && !landing;
+  upBtn.classList.toggle('hidden', !showUpDown);
+  downBtn.classList.toggle('hidden', !showUpDown);
+}
+
 // --- Moving the player every frame ---
 function updatePlayer(dt) {
   let forward = 0;
@@ -371,15 +447,72 @@ function updatePlayer(dt) {
     strafe /= length;
   }
 
-  let speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 12 : 6;
-
-  // Wading through the river slows you down.
-  if (Math.abs(player.x - riverX(player.z)) < RIVER_WIDTH / 2) speed *= 0.5;
+  const shift = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  let speed;
+  if (flying) {
+    speed = shift ? 30 : 14;          // flying is faster than walking
+  } else {
+    speed = shift ? 12 : 6;
+    // Wading through the river slows you down (only when walking).
+    if (Math.abs(player.x - riverX(player.z)) < RIVER_WIDTH / 2) speed *= 0.5;
+  }
 
   const sin = Math.sin(player.yaw);
   const cos = Math.cos(player.yaw);
-  player.x += (-sin * forward + cos * strafe) * speed * dt;
-  player.z += (-cos * forward - sin * strafe) * speed * dt;
+  const targetX = (-sin * forward + cos * strafe) * speed;
+  const targetZ = (-cos * forward - sin * strafe) * speed;
+
+  if (flying) {
+    // Smooth flying: speed eases toward the target instead of jumping to it.
+    const ease = 1 - Math.exp(-4 * dt);
+    vel.x += (targetX - vel.x) * ease;
+    vel.z += (targetZ - vel.z) * ease;
+  } else {
+    // Walking is direct. We also remember the speed so take-off feels smooth.
+    vel.x = targetX;
+    vel.z = targetZ;
+  }
+
+  player.x += vel.x * dt;
+  player.z += vel.z * dt;
+
+  // Up and down (fly mode only)
+  if (flying) {
+    let up = 0;
+    if (!landing) {
+      if (keys.has('Space') || touchUp) up += 1;
+      if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC') || touchDown) up -= 1;
+    }
+
+    let targetVy = up * 12;
+
+    if (landing) {
+      // Come down gently: fast when high, slow near the ground.
+      const heightAboveGround = player.y - EYE_HEIGHT;
+      targetVy = -Math.min(10, 1.5 + heightAboveGround * 0.8);
+    }
+
+    vy += (targetVy - vy) * (1 - Math.exp(-5 * dt));
+    player.y += vy * dt;
+
+    // Never go higher than the maximum.
+    if (player.y > EYE_HEIGHT + MAX_ALTITUDE) {
+      player.y = EYE_HEIGHT + MAX_ALTITUDE;
+      if (vy > 0) vy = 0;
+    }
+
+    // Never go under the ground. Touching down while landing (or holding Down) ends fly mode.
+    if (player.y <= EYE_HEIGHT) {
+      player.y = EYE_HEIGHT;
+      if (vy < 0) vy = 0;
+      if (landing || up < 0) {
+        flying = false;
+        landing = false;
+        vy = 0;
+        updateFlyUI();
+      }
+    }
+  }
 
   // Keep the player inside the world.
   const distance = Math.hypot(player.x, player.z);
@@ -396,6 +529,7 @@ const loadingScreen = document.getElementById('loading');
 const menuScreen = document.getElementById('menu');
 const hud = document.getElementById('hud');
 const hudHint = document.getElementById('hudHint');
+const hudAltitude = document.getElementById('hudAltitude');
 const startBtn = document.getElementById('startBtn');
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
 
@@ -406,11 +540,25 @@ startBtn.addEventListener('click', () => {
 
   if (isTouchDevice) {
     joystick.classList.remove('hidden');
-    hudHint.textContent = 'Left circle: walk. Drag to look.';
+    flyButtons.classList.remove('hidden');
+    hudHint.textContent = 'Left circle: walk. Drag to look. Fly button: fly.';
   } else {
-    hudHint.textContent = 'WASD or arrows: walk. Shift: run. Drag mouse: look.';
+    hudHint.textContent = 'WASD: walk. Shift: run. F: fly. Space up, Ctrl/C down.';
   }
 });
+
+// Show the altitude (only touches the page when the text changes).
+let lastAltitudeText = '';
+function updateAltitudeDisplay() {
+  const metres = Math.max(0, Math.round(player.y - EYE_HEIGHT));
+  let mode = 'Walking';
+  if (flying) mode = landing ? 'Landing' : 'Flying';
+  const text = `${mode} \u00B7 Altitude: ${metres} m`;
+  if (text !== lastAltitudeText) {
+    hudAltitude.textContent = text;
+    lastAltitudeText = text;
+  }
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -429,10 +577,13 @@ function animate(now) {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  if (started) updatePlayer(dt);
+  if (started) {
+    updatePlayer(dt);
+    updateAltitudeDisplay();
+  }
 
   // Put the camera where the player is.
-  camera.position.set(player.x, EYE_HEIGHT, player.z);
+  camera.position.set(player.x, player.y, player.z);
   camera.rotation.set(player.pitch, player.yaw, 0);
 
   // The sky follows the camera so it never gets closer.
