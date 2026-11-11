@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Everyone can see who owns which plot. Only a signed-in person can claim, once.
+    match /plots/{plotId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerId', 'ownerName', 'claimedAt'])
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.plotId == plotId;
+      allow update, delete: if false;
+    }
+
+    // Remembers which plot a person claimed (so nobody can claim two).
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['plotId']);
+      allow update, delete: if false;
+    }
+  }
+}
