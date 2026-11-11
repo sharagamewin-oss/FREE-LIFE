@@ -1654,9 +1654,9 @@ function updateFlyUI() {
 }
 
 // --- Moving the player every frame ---
-// ---------- Solid houses ----------
-// The box each house blocks, in the HOUSE's own directions (x = right, z = toward the street).
-// The front wall is at z = -0.5, so the door side is the +z side. Numbers are metres.
+// ---------- Solid things: houses, fences, bushes, flower beds and trees ----------
+// Everything below is measured in the HOUSE's own directions (x = right, z = toward the street).
+// The front wall is at z = -0.5, so the garden and the street are on the +z side. Numbers are metres.
 const HOUSE_BOXES = {
   cottage:     { x: 4.5, zMin: -8.5, zMax: -0.5 },
   treehouse:   { x: 1.8, zMin: -6.3, zMax: -2.7 },   // just the trunk (the cabin is high up)
@@ -1664,14 +1664,79 @@ const HOUSE_BOXES = {
   traditional: { x: 4.5, zMin: -8.5, zMax: -0.5 }
 };
 const HOUSE_BLOCK_HEIGHT = 12;   // flying higher than this lets you pass over the roofs
-const PLAYER_RADIUS = 0.6;       // keeps the camera from poking into walls
+const PLAYER_RADIUS = 0.6;       // keeps the camera from poking into house walls
+const GARDEN_PAD = 0.3;          // keeps the camera from poking into fences, bushes and plants
 
-// Is the point (x, z) inside the wall of a house? Only the house in that plot is checked.
-function blockedByHouse(x, z) {
+// Small box: [centre x, centre z, width, depth, height]
+// Round thing: [x, z, radius, height]
+// You can walk over a thing only by flying higher than its height.
+const FENCE_BOXES = [
+  [-6.2, 11, 9.6, 0.3, 1.0],    // front fence, left of the gate
+  [6.2, 11, 9.6, 0.3, 1.0],     // front fence, right of the gate
+  [-11, 2.5, 0.3, 17, 1.0],     // left fence
+  [11, 2.5, 0.3, 17, 1.0]       // right fence
+];
+
+function gardenWith(roundThings, beds) {
+  return { round: roundThings, boxes: FENCE_BOXES.concat(beds) };
+}
+
+const GARDEN = {
+  cottage: gardenWith(
+    [[-4.9, 0.5, 0.95, 1.8], [4.9, 0.5, 0.95, 1.8]],                      // bushes
+    [[-5, 6, 3.6, 2.2, 0.8], [5, 6, 3.6, 2.2, 0.8]]                       // flower beds
+  ),
+  treehouse: gardenWith(
+    [[-7, 0, 0.95, 1.8], [7, 0, 0.95, 1.8]],
+    [[-5.5, 7, 3.4, 2.2, 0.8], [5.5, 7, 3.4, 2.2, 0.8]]
+  ),
+  traditional: gardenWith(
+    [[-5.5, 0.6, 0.95, 1.8], [5.5, 0.6, 0.95, 1.8]],
+    [[-5.5, 5.5, 3.6, 2.2, 0.8], [5.5, 5.5, 3.6, 2.2, 0.8]]
+  ),
+  modern: {
+    round: [[-1.4, 0.9, 0.7, 2.0], [3.0, 0.9, 0.7, 2.0], [6.5, 5, 0.3, 2.2]],   // planters and the small tree
+    boxes: [                                                                    // the hedges
+      [-5.7, 10.6, 10.6, 1.1, 1.0],
+      [6.5, 10.6, 9.0, 1.1, 1.0],
+      [-10.6, 2.3, 1.1, 16.6, 1.0],
+      [10.6, 2.3, 1.1, 16.6, 1.0]
+    ]
+  }
+};
+
+// Trees: the trunk is solid (you can walk under the leaves). Each 6 m square holds one tree at most.
+const TREE_AT = new Map();
+const TRUNK_RADIUS = { round: 0.45, tall: 0.4, pine: 0.35 };
+const TREE_TRUNK_HEIGHT = 3;
+Object.keys(treeLists).forEach((type) => {
+  treeLists[type].forEach((t) => {
+    TREE_AT.set(`${Math.floor(t.x / 6)},${Math.floor(t.z / 6)}`, {
+      x: t.x,
+      z: t.z,
+      r: TRUNK_RADIUS[type] * t.size
+    });
+  });
+});
+
+// Is the point (x, z) inside something solid? "altitude" is how high you are above the ground.
+function blockedBySolid(x, z, altitude) {
+  // Tree trunks
+  if (altitude < TREE_TRUNK_HEIGHT) {
+    const cx = Math.floor(x / 6);
+    const cz = Math.floor(z / 6);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const t = TREE_AT.get(`${cx + i},${cz + j}`);
+        if (t && Math.hypot(x - t.x, z - t.z) < t.r + GARDEN_PAD) return true;
+      }
+    }
+  }
+
+  // Only the house in that plot is checked.
   const plot = PLOT_AT[`${Math.floor(x / PLOT_PITCH)},${Math.floor(z / PLOT_PITCH)}`];
   if (!plot || !plot.house) return false;
 
-  const box = HOUSE_BOXES[plot.house];
   const dx = x - plot.x;
   const dz = z - plot.z;
   const c = Math.cos(plot.facing);
@@ -1679,9 +1744,27 @@ function blockedByHouse(x, z) {
   const lx = c * dx - s * dz;    // world position -> house's own directions
   const lz = s * dx + c * dz;
 
-  return Math.abs(lx) < box.x + PLAYER_RADIUS &&
-         lz > box.zMin - PLAYER_RADIUS &&
-         lz < box.zMax + PLAYER_RADIUS;
+  // The house itself
+  if (altitude < HOUSE_BLOCK_HEIGHT) {
+    const box = HOUSE_BOXES[plot.house];
+    if (Math.abs(lx) < box.x + PLAYER_RADIUS &&
+        lz > box.zMin - PLAYER_RADIUS &&
+        lz < box.zMax + PLAYER_RADIUS) return true;
+  }
+
+  // Fences, bushes, flower beds, hedges, planters
+  const garden = GARDEN[plot.house];
+  if (garden) {
+    for (const [gx, gz, r, h] of garden.round) {
+      if (altitude < h && Math.hypot(lx - gx, lz - gz) < r + GARDEN_PAD) return true;
+    }
+    for (const [gx, gz, w, d, h] of garden.boxes) {
+      if (altitude < h &&
+          Math.abs(lx - gx) < w / 2 + GARDEN_PAD &&
+          Math.abs(lz - gz) < d / 2 + GARDEN_PAD) return true;
+    }
+  }
+  return false;
 }
 
 function updatePlayer(dt) {
@@ -1742,11 +1825,19 @@ function updatePlayer(dt) {
   player.x += vel.x * dt;
   player.z += vel.z * dt;
 
-  // Houses are solid: walking into a wall stops you (flying high above a roof is fine).
-  // We try each direction on its own, so you slide along walls instead of sticking.
-  if (!inside && player.y - EYE_HEIGHT < HOUSE_BLOCK_HEIGHT) {
-    if (blockedByHouse(player.x, oldZ)) { player.x = oldX; vel.x = 0; }
-    if (blockedByHouse(player.x, player.z)) { player.z = oldZ; vel.z = 0; }
+  // Houses, fences, bushes, plants and trees are solid: walking into them stops you
+  // (flying high above them is fine). We try each direction on its own, so you slide along
+  // instead of sticking. If you already stand inside something, you may walk out of it.
+  if (!inside) {
+    const altitude = player.y - EYE_HEIGHT;
+    if (blockedBySolid(player.x, oldZ, altitude) && !blockedBySolid(oldX, oldZ, altitude)) {
+      player.x = oldX;
+      vel.x = 0;
+    }
+    if (blockedBySolid(player.x, player.z, altitude) && !blockedBySolid(player.x, oldZ, altitude)) {
+      player.z = oldZ;
+      vel.z = 0;
+    }
   }
 
   // Up and down (fly mode only)
