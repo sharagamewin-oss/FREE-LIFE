@@ -52,3 +52,65 @@
     onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
 </body>
 </html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>FREE LIFE</title>
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- This tells the browser where to find Three.js (loaded from a CDN) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <!-- The 3D world is drawn here -->
+  <canvas id="game"></canvas>
+
+  <!-- 1) Loading screen -->
+  <div id="loading" class="screen">
+    <h1 class="title">FREE LIFE</h1>
+    <p id="loadingText" class="subtitle">Loading the land</p>
+    <div class="dots"><span></span><span></span><span></span></div>
+    <noscript><p class="subtitle">Please turn on JavaScript to enter FREE LIFE.</p></noscript>
+  </div>
+
+  <!-- 2) Main menu -->
+  <div id="menu" class="screen hidden">
+    <h1 class="title">FREE LIFE</h1>
+    <p class="subtitle">A world to live in, your way.</p>
+    <button id="startBtn">Enter the World</button>
+    <p class="help">
+      Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
+      Press F to fly. Space = up, Ctrl or C = down. Press F again to land.<br>
+      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly.
+    </p>
+  </div>
+
+  <!-- 3) In-game text (shown after you press Enter the World) -->
+  <div id="hud" class="hidden">
+    <div id="hudTitle">FREE LIFE</div>
+    <div id="hudHint"></div>
+    <div id="hudAlt">Altitude: 0 m</div>
+  </div>
+
+  <!-- Touch joystick (only shown on phones and tablets) -->
+  <div id="joystick" class="hidden"><div id="stick"></div></div>
+
+  <!-- Touch fly buttons (only shown on phones and tablets) -->
+  <button id="downBtn" class="flyCtl hidden">&#9660;</button>
+  <button id="upBtn" class="flyCtl hidden">&#9650;</button>
+  <button id="flyBtn" class="hidden">Fly</button>
+
+  <script type="module" src="js/main.js"
+    onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
+</body>
+</html>
