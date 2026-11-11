@@ -1910,7 +1910,7 @@ function updateDoorPrompt() {
     }
   } else if (!flying && player.y - EYE_HEIGHT < 3) {
     doorPlot = findNearbyDoor();
-    if (doorPlot) {
+    if (doorPlot && canEnterPlot(doorPlot)) {
       doorAction = 'enter';
       text = doorPlot.house === 'treehouse' ? 'Climb up and go inside (E)' : 'Go inside (E)';
     }
@@ -1923,7 +1923,17 @@ function updateDoorPrompt() {
   lastDoorText = text;
 }
 
+// Can this person walk into this house? Free houses are open to all.
+// Bought houses are only for the owner and the members the owner said yes to.
+function canEnterPlot(plot) {
+  if (!plot.ownerId) return true;
+  const uid = currentUser && currentUser.uid;
+  if (!uid) return false;
+  return plot.ownerId === uid || (plot.memberIds || []).includes(uid);
+}
+
 function enterHouse(plot) {
+  if (!canEnterPlot(plot)) return;
   const room = interiors[plot.house];
   inside = { plot, style: plot.house, x: room.x, z: room.z };
   room.mesh.visible = true;
@@ -1981,30 +1991,51 @@ doorBtn.addEventListener('click', () => {
 });
 
 // =====================================================
-// 8c. FIREBASE (sign in, game money, buying a house)
+// 8c. FIREBASE (sign in, game money, buying, permission to enter)
 // =====================================================
 // Loaded on its own, so if Firebase is not set up yet the game still works.
 const authBtn = document.getElementById('authBtn');
 const authName = document.getElementById('authName');
 const coinText = document.getElementById('coinText');
+const houseBtn = document.getElementById('houseBtn');
 const claimBtn = document.getElementById('claimBtn');
 const agreement = document.getElementById('agreement');
 const paperBody = document.getElementById('paperBody');
 const paperMsg = document.getElementById('paperMsg');
 const paperYes = document.getElementById('paperYes');
 const paperNo = document.getElementById('paperNo');
+const housePanel = document.getElementById('housePanel');
+const housePanelBody = document.getElementById('housePanelBody');
+const housePanelMsg = document.getElementById('housePanelMsg');
+const houseClose = document.getElementById('houseClose');
 
-let fb = null;            // the Firebase helpers, once loaded
-let currentUser = null;   // the signed-in person, or null
-let coins = null;         // the player's game coins (null = not known yet)
-let stopWallet = null;    // stops listening to the wallet when signing out
-let agreementOpen = false;
-let pendingPlot = null;   // the house being bought in the open paper
+let fb = null;                 // the Firebase helpers, once loaded
+let currentUser = null;        // the signed-in person, or null
+let coins = null;              // the player's game coins (null = not known yet)
+let stopWatchers = [];         // functions that stop listening when signing out
+let agreementOpen = false;     // true while any paper or panel is open
+let pendingPlot = null;        // the house being bought in the open paper
+let requestsToMe = [];         // people asking to enter MY house
+let myRequestPlots = new Set(); // houses I asked to enter
+
+function myPlot() {
+  return currentUser ? PLOTS.find((p) => p.ownerId === currentUser.uid) || null : null;
+}
 
 function updateCoinText() {
-  const show = !!currentUser;
-  coinText.classList.toggle('hidden', !show);
+  coinText.classList.toggle('hidden', !currentUser);
   coinText.textContent = typeof coins === 'number' ? `Coins: ${coins}` : 'Coins: ...';
+}
+
+// Shows the "My House" button for house owners, with the number of waiting requests.
+function updateHouseBtn() {
+  const mine = myPlot();
+  houseBtn.classList.toggle('hidden', !mine);
+  if (mine) {
+    const n = requestsToMe.filter((r) => r.plotId === mine.id).length;
+    houseBtn.textContent = n ? `My House (${n})` : 'My House';
+  }
+  if (!housePanel.classList.contains('hidden')) renderHousePanel();
 }
 
 import('./firebase.js').then((mod) => {
@@ -2014,19 +2045,30 @@ import('./firebase.js').then((mod) => {
   fb.onUserChange(async (user) => {
     currentUser = user;
     coins = null;
-    if (stopWallet) { stopWallet(); stopWallet = null; }
+    requestsToMe = [];
+    myRequestPlots = new Set();
+    stopWatchers.forEach((stop) => stop());
+    stopWatchers = [];
 
     authBtn.textContent = user ? 'Sign out' : 'Sign in with Google';
     authName.textContent = user ? user.displayName || 'Player' : '';
     authName.classList.toggle('hidden', !user);
     updateCoinText();
+    updateHouseBtn();
 
     if (user) {
       try { await fb.ensureWallet(user); } catch (err) { console.warn('Wallet error:', err); }
-      stopWallet = fb.watchWallet(user.uid, (data) => {
+      stopWatchers.push(fb.watchWallet(user.uid, (data) => {
         coins = data.coins;
         updateCoinText();
-      });
+      }));
+      stopWatchers.push(fb.watchRequestsToMe(user.uid, (list) => {
+        requestsToMe = list;
+        updateHouseBtn();
+      }));
+      stopWatchers.push(fb.watchMyRequests(user.uid, (plotIds) => {
+        myRequestPlots = new Set(plotIds);
+      }));
     }
   });
 
@@ -2038,7 +2080,10 @@ import('./firebase.js').then((mod) => {
       plot.ownerName = o ? o.ownerName : null;
       plot.price = o ? o.price : null;
       plot.boughtAt = o ? o.boughtAt : null;
+      plot.memberIds = o ? o.memberIds : [];
+      plot.members = o ? o.members : {};
     });
+    updateHouseBtn();
   });
 }).catch((err) => console.warn('Firebase is not ready yet:', err));
 
@@ -2046,6 +2091,25 @@ authBtn.addEventListener('click', () => {
   if (!fb) return;
   if (currentUser) fb.signOutUser();
   else fb.signIn().catch((err) => console.warn('Sign in failed:', err));
+});
+
+// ---------- Opening and closing papers ----------
+function freezePlayer() {
+  agreementOpen = true;
+  keys.clear();
+  vel.x = 0;
+  vel.z = 0;
+}
+
+function closeAgreement() {
+  agreementOpen = false;
+  pendingPlot = null;
+  agreement.classList.add('hidden');
+  housePanel.classList.add('hidden');
+}
+
+window.addEventListener('keydown', (e) => {
+  if (agreementOpen && e.code === 'Escape') closeAgreement();
 });
 
 // ---------- The house agreement paper ----------
@@ -2061,10 +2125,7 @@ function paperRow(label, value) {
 }
 
 function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
-  agreementOpen = true;
-  keys.clear();
-  vel.x = 0;
-  vel.z = 0;
+  freezePlayer();
 
   const style = plot.house.charAt(0).toUpperCase() + plot.house.slice(1);
   const buying = mode === 'buy';
@@ -2083,6 +2144,7 @@ function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
   }
 
   pendingPlot = buying ? plot : null;
+  paperMsg.style.color = '#b3261e';
   paperMsg.textContent = '';
   paperYes.classList.toggle('hidden', !buying);
   paperYes.disabled = false;
@@ -2095,16 +2157,7 @@ function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
   agreement.classList.remove('hidden');
 }
 
-function closeAgreement() {
-  agreementOpen = false;
-  pendingPlot = null;
-  agreement.classList.add('hidden');
-}
-
 paperNo.addEventListener('click', closeAgreement);
-window.addEventListener('keydown', (e) => {
-  if (agreementOpen && e.code === 'Escape') closeAgreement();
-});
 
 paperYes.addEventListener('click', async () => {
   if (!fb || !pendingPlot) return;
@@ -2114,7 +2167,7 @@ paperYes.addEventListener('click', async () => {
   try {
     await fb.buyPlot(pendingPlot.id, pendingPlot.house);
     closeAgreement();
-    hudHint.textContent = 'Congratulations! This house is now yours.';
+    hudHint.textContent = 'Congratulations! This house is now yours. Only you can enter it.';
   } catch (err) {
     console.warn('Could not buy:', err);
     const messages = {
@@ -2129,8 +2182,104 @@ paperYes.addEventListener('click', async () => {
   }
 });
 
+// ---------- My House panel (requests and members) ----------
+function houseHeading(text) {
+  const h = document.createElement('h3');
+  h.textContent = text;
+  housePanelBody.appendChild(h);
+}
+
+function houseNote(text) {
+  const p = document.createElement('p');
+  p.className = 'houseNote';
+  p.textContent = text;
+  housePanelBody.appendChild(p);
+}
+
+function houseButton(label, className, onClick) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  if (className) b.className = className;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function showHouseError(err) {
+  console.warn(err);
+  housePanelMsg.textContent = 'Something went wrong. Please try again.';
+}
+
+function renderHousePanel() {
+  housePanelBody.textContent = '';
+  const mine = myPlot();
+  if (!mine) {
+    houseNote('You do not own a house yet.');
+    return;
+  }
+  const memberIds = mine.memberIds || [];
+  const members = mine.members || {};
+
+  houseHeading('People asking to enter');
+  const waiting = requestsToMe.filter((r) => r.plotId === mine.id);
+  if (!waiting.length) houseNote('No requests right now.');
+  waiting.forEach((req) => {
+    const row = document.createElement('div');
+    row.className = 'houseRow';
+    const who = document.createElement('span');
+    who.className = 'grow';
+    who.textContent = req.fromName;
+
+    const role = document.createElement('select');
+    fb.ROLES.forEach((r) => {
+      const opt = document.createElement('option');
+      opt.value = r;
+      opt.textContent = r;
+      role.appendChild(opt);
+    });
+
+    const yes = houseButton('Allow', '', () => {
+      housePanelMsg.textContent = '';
+      fb.approveRequest(req, role.value).catch(showHouseError);
+    });
+    yes.disabled = memberIds.length >= fb.MAX_MEMBERS;
+    const no = houseButton('Say no', 'no', () => {
+      housePanelMsg.textContent = '';
+      fb.denyRequest(req).catch(showHouseError);
+    });
+    row.append(who, role, yes, no);
+    housePanelBody.appendChild(row);
+  });
+  if (memberIds.length >= fb.MAX_MEMBERS) houseNote(`Your house is full (${fb.MAX_MEMBERS} members).`);
+
+  houseHeading('Who stays in my house');
+  if (!memberIds.length) houseNote('Nobody yet. Only you can enter.');
+  memberIds.forEach((id) => {
+    const m = members[id] || {};
+    const row = document.createElement('div');
+    row.className = 'houseRow';
+    const who = document.createElement('span');
+    who.className = 'grow';
+    who.textContent = `${m.name || 'Member'} (${m.role || 'Friend'})`;
+    const remove = houseButton('Remove', 'no', () => {
+      housePanelMsg.textContent = '';
+      fb.removeMember(mine.id, id).catch(showHouseError);
+    });
+    row.append(who, remove);
+    housePanelBody.appendChild(row);
+  });
+}
+
+houseBtn.addEventListener('click', () => {
+  if (!fb) return;
+  freezePlayer();
+  housePanelMsg.textContent = '';
+  renderHousePanel();
+  housePanel.classList.remove('hidden');
+});
+houseClose.addEventListener('click', closeAgreement);
+
 // ---------- The button at a house door ----------
-let claimMode = null;        // 'buy', 'signin', 'view' or null (just a text label)
+let claimMode = null;        // 'buy', 'view', 'ask', 'signin' or null (just a text label)
 let claimPlotTarget = null;
 let lastClaimText = '';
 
@@ -2138,12 +2287,20 @@ claimBtn.addEventListener('click', () => {
   if (!fb || !claimPlotTarget || !claimMode) return;
   if (claimMode === 'signin') {
     fb.signIn().catch((err) => console.warn('Sign in failed:', err));
+  } else if (claimMode === 'ask') {
+    const plot = claimPlotTarget;
+    fb.askToEnter(plot).then(() => {
+      hudHint.textContent = `Your request was sent to ${plot.ownerName || 'the owner'}. Wait for a yes.`;
+    }).catch((err) => {
+      console.warn('Could not ask:', err);
+      hudHint.textContent = 'Could not send the request. Please try again.';
+    });
   } else {
     openAgreement(claimPlotTarget, claimMode);
   }
 });
 
-// Runs every frame: shows the buy button (or the owner's name) at a house door.
+// Runs every frame: shows the right button (or label) at a house door.
 function updateClaimPrompt() {
   claimMode = null;
   claimPlotTarget = null;
@@ -2155,12 +2312,12 @@ function updateClaimPrompt() {
     claimPlotTarget = plot;
 
     if (!plot.ownerId) {
+      // For sale
       const price = fb.PRICES[plot.house];
-      const ownsOne = !!uid && PLOTS.some((p) => p.ownerId === uid);
       if (!uid) {
         text = `For sale: ${price} coins. Sign in to buy`;
         claimMode = 'signin';
-      } else if (ownsOne) {
+      } else if (myPlot()) {
         text = `For sale: ${price} coins`;
       } else {
         text = `Buy this house: ${price} coins`;
@@ -2169,8 +2326,17 @@ function updateClaimPrompt() {
     } else if (plot.ownerId === uid) {
       text = 'View my house agreement';
       claimMode = 'view';
+    } else if (uid && (plot.memberIds || []).includes(uid)) {
+      const m = (plot.members || {})[uid] || {};
+      text = `${plot.ownerName || 'A player'}'s house (you are: ${m.role || 'Friend'})`;
+    } else if (!uid) {
+      text = `Owned by ${plot.ownerName || 'a player'}. Sign in to ask permission`;
+      claimMode = 'signin';
+    } else if (myRequestPlots.has(plot.id)) {
+      text = `Request sent. Waiting for ${plot.ownerName || 'the owner'}`;
     } else {
-      text = `Owned by ${plot.ownerName || 'a player'}`;
+      text = `Owned by ${plot.ownerName || 'a player'}. Ask permission to enter`;
+      claimMode = 'ask';
     }
   }
 
