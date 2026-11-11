@@ -36,7 +36,8 @@
     <p class="help">
       Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
       Fly: press F. Space goes up, Ctrl or C goes down. Press F again to land.<br>
-      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly.
+      Houses: stand at a house door and press E to go inside. Press E at the inside door to go out.<br>
+      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly, tap the door button to go in or out.
     </p>
   </div>
 
@@ -56,6 +57,9 @@
     <button id="downBtn" class="flyBtn small hidden">&#9660;</button>
     <button id="flyBtn" class="flyBtn">Fly</button>
   </div>
+
+  <!-- Door button (appears when you are near a door, outside or inside) -->
+  <button id="doorBtn" class="hidden">Go inside (E)</button>
 
   <script type="module" src="js/main.js"
     onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
