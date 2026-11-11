@@ -2,22 +2,44 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Everyone can see who owns which plot. Only a signed-in person can claim, once.
+    // Price list (must match PRICES in js/firebase.js)
+    function priceOf(house) {
+      return {'cottage': 2000, 'treehouse': 2500, 'traditional': 3000, 'modern': 4000}[house];
+    }
+
+    // Everyone can see who owns which house. A house can be bought once.
     match /plots/{plotId} {
       allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.keys().hasOnly(['ownerId', 'ownerName', 'claimedAt'])
+        && request.resource.data.keys().hasOnly(['ownerId', 'ownerName', 'house', 'price', 'boughtAt'])
+        && request.resource.data.price == priceOf(request.resource.data.house)
         && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.plotId == plotId;
       allow update, delete: if false;
     }
 
-    // Remembers which plot a person claimed (so nobody can claim two).
+    // Each player's wallet. Only that player can see it.
     match /users/{uid} {
       allow read: if request.auth != null && request.auth.uid == uid;
+
+      // New player: starting coins, no house yet.
       allow create: if request.auth != null && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['plotId']);
-      allow update, delete: if false;
+        && request.resource.data.keys().hasOnly(['coins', 'plotId'])
+        && request.resource.data.coins == 5000
+        && request.resource.data.plotId == null;
+
+      // Buying a house: the coins go down by exactly the price, and only once.
+      allow update: if request.auth != null && request.auth.uid == uid
+        && resource.data.plotId == null
+        && request.resource.data.keys().hasOnly(['coins', 'plotId'])
+        && request.resource.data.plotId is string
+        && request.resource.data.coins is int
+        && request.resource.data.coins >= 0
+        && getAfter(/databases/$(database)/documents/plots/$(request.resource.data.plotId)).data.ownerId == request.auth.uid
+        && request.resource.data.coins == resource.data.coins
+             - getAfter(/databases/$(database)/documents/plots/$(request.resource.data.plotId)).data.price;
+
+      allow delete: if false;
     }
   }
 }
