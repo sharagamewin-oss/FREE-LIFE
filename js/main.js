@@ -181,6 +181,19 @@ const ground = new THREE.Mesh(
 );
 scene.add(ground);
 
+// A small random number maker with a fixed seed. The same seed gives the same
+// result every visit, so houses, stones and trees are always in the same places.
+function makeRng(seed) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // =====================================================
 // 5. RIVER (flowing water with soft sandy banks)
 // =====================================================
@@ -191,7 +204,7 @@ function riverX(z) {
   return 140 + 35 * Math.sin(z * 0.008);
 }
 
-// A clock for everything that sways in the wind (reeds now; trees and breeze later).
+// A clock for everything that sways in the wind (reeds, trees, and the breeze later).
 const windUniform = { value: 0 };
 
 // Soft ripple streaks that tile without seams. They are stretched along the flow direction.
@@ -326,27 +339,33 @@ squareRing.position.y = 0.32;
 scene.add(squareRing);
 
 // =====================================================
-// 6b. PLOTS (the data array) AND HOUSES
+// 6b. PLOTS (the data array) AND HOUSES (about 500 of them)
 // =====================================================
 
 // ---------- The plot grid ----------
 // Plot centres sit every 36 m. Each plot is 24 m wide, so a 12 m "street line"
-// is left between plots (at x or z = 0, +-36, +-72 ...). Roads go there (Phase 3).
+// is left between plots (at x or z = 0, +-36, +-72 ...). Roads go on those lines.
+// The town fills the land WEST of the river: 14 columns x 36 rows = 504 cells,
+// minus the 4 cells next to the square = 500 plots.
 const PLOT_PITCH = 36;
 const PLOT_SIZE = 24;
-const GRID_MIN = -3;   // grid columns/rows from -3 to 2 (centres at -90 ... +90)
-const GRID_MAX = 2;
+const GRID_MIN_X = -12;   // columns -12 ... 1  (plot centres x = -414 ... +54)
+const GRID_MAX_X = 1;
+const GRID_MIN_Z = -18;   // rows -18 ... 17    (plot centres z = -630 ... +630)
+const GRID_MAX_Z = 17;
 const HOUSE_STYLES = ['cottage', 'treehouse', 'modern', 'traditional'];
-const PAD_TOP = 0.1;   // height of the plot pads; houses are built on top of it
+const PAD_TOP = 0.1;      // height of the plot pads; houses are built on top of it
 
 // THE DATA ARRAY. Every plot is one object. Later, Firebase can fill in
 // ownerId and house for each plot, and the world will draw itself from this list.
 //   id      : unique name of the plot
+//   gx, gz  : the plot's column and row in the grid
 //   x, z    : centre of the plot in the world
 //   facing  : the direction the front door looks (radians)
-//   ownerId : null = nobody owns it yet
-//   house   : null = empty plot, or 'cottage' | 'treehouse' | 'modern' | 'traditional'
+//   ownerId : null = nobody owns it yet (ready to be claimed)
+//   house   : 'cottage' | 'treehouse' | 'modern' | 'traditional' (null = empty plot)
 const PLOTS = [];
+const PLOT_AT = {};   // quick lookup: PLOT_AT['gx,gz'] gives the plot in that grid cell
 
 // Does this plot touch the town square (plus a little space around it)?
 function plotTouchesSquare(x, z) {
@@ -367,8 +386,10 @@ function plotTouchesRiver(x, z) {
   return false;
 }
 
-for (let gz = GRID_MIN; gz <= GRID_MAX; gz++) {
-  for (let gx = GRID_MIN; gx <= GRID_MAX; gx++) {
+const styleRng = makeRng(11);
+
+for (let gz = GRID_MIN_Z; gz <= GRID_MAX_Z; gz++) {
+  for (let gx = GRID_MIN_X; gx <= GRID_MAX_X; gx++) {
     const x = (gx + 0.5) * PLOT_PITCH;
     const z = (gz + 0.5) * PLOT_PITCH;
     if (plotTouchesSquare(x, z) || plotTouchesRiver(x, z)) continue;
@@ -380,9 +401,7 @@ for (let gz = GRID_MIN; gz <= GRID_MAX; gz++) {
     if (Math.abs(x) > Math.abs(z)) faceX = -Math.sign(x);
     else faceZ = -Math.sign(z);
 
-    // For now: plots close to the square get a demo house, the others stay empty.
-    const isNear = Math.hypot(x, z) < 85;
-    PLOTS.push({
+    const plot = {
       id: `plot_${gx}_${gz}`,
       gx,
       gz,
@@ -390,8 +409,10 @@ for (let gz = GRID_MIN; gz <= GRID_MAX; gz++) {
       z,
       facing: Math.atan2(faceX, faceZ),
       ownerId: null,
-      house: isNear ? HOUSE_STYLES[((gx - GRID_MIN) + 2 * (gz - GRID_MIN)) % 4] : null
-    });
+      house: HOUSE_STYLES[Math.floor(styleRng() * HOUSE_STYLES.length)]
+    };
+    PLOTS.push(plot);
+    PLOT_AT[`${gx},${gz}`] = plot;
   }
 }
 
@@ -442,6 +463,10 @@ const U_GABLE = (() => {
   return g;
 })();
 
+// LITE MODE: when true, houses are built in a simple version (no flowers, fences,
+// bushes or tiny parts). Houses far away use the simple version so phones stay fast.
+let liteMode = false;
+
 function makeBuilder() {
   const pos = [];
   const nor = [];
@@ -455,6 +480,11 @@ function makeBuilder() {
 
   // Adds one part: shape, colour, centre position, size, rotation.
   function add(geo, color, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) {
+    if (liteMode) {
+      if (geo === U_DOT) return;                  // no tiny flowers
+      if (geo === U_BALL && sx < 2.5) return;     // no small balls (bushes, knobs)
+    }
+
     eul.set(rx, ry, rz);
     q.setFromEuler(eul);
     p.set(x, y, z);
@@ -510,6 +540,10 @@ const FLOWER_COLORS = [0xf48fb1, 0xffd54f, 0xffffff, 0xff8a65];
 
 // A window on a front wall. (x, y) = middle-bottom of the glass. Zf = the wall's z.
 function frontWindow(b, x, y, Zf, w, h, frameCol, glassCol) {
+  if (liteMode) {
+    b.box(glassCol, w, h, 0.2, x, y, Zf + 0.04);
+    return;
+  }
   b.box(frameCol, w + 0.4, h + 0.4, 0.16, x, y - 0.2, Zf + 0.04);
   b.box(glassCol, w, h, 0.2, x, y, Zf + 0.04);
   b.box(frameCol, 0.1, h, 0.04, x, y, Zf + 0.16);
@@ -518,6 +552,10 @@ function frontWindow(b, x, y, Zf, w, h, frameCol, glassCol) {
 
 // A window on a side wall. side = +1 (right wall) or -1 (left wall). Xf = the wall's x.
 function sideWindow(b, side, z, y, Xf, w, h, frameCol, glassCol) {
+  if (liteMode) {
+    b.box(glassCol, 0.2, h, w, Xf + side * 0.04, y, z);
+    return;
+  }
   b.box(frameCol, 0.16, h + 0.4, w + 0.4, Xf + side * 0.04, y - 0.2, z);
   b.box(glassCol, 0.2, h, w, Xf + side * 0.04, y, z);
   b.box(frameCol, 0.04, h, 0.1, Xf + side * 0.16, y, z);
@@ -543,6 +581,7 @@ function fenceZ(b, color, x, z1, z2) {
 
 // Fence around the front garden, with a gate gap in the middle.
 function gardenFence(b, color) {
+  if (liteMode) return;
   fenceX(b, color, 11, -11, -1.4);
   fenceX(b, color, 11, 1.4, 11);
   fenceZ(b, color, -11, -6, 11);
@@ -552,6 +591,7 @@ function gardenFence(b, color) {
 // A small bed of flowers.
 function flowerBed(b, x, z, w, d) {
   b.box(0x7a5237, w, 0.18, d, x, G, z);
+  if (liteMode) return;
   const n = Math.round(w * d * 0.9);
   for (let i = 0; i < n; i++) {
     const fx = x + (Math.random() - 0.5) * (w - 0.6);
@@ -563,6 +603,7 @@ function flowerBed(b, x, z, w, d) {
 
 // A round bush.
 function bush(b, x, z, size = 1.9) {
+  if (liteMode) return;
   b.ball(LEAF, size, x, G + size * 0.42, z, 0.85);
 }
 
@@ -628,13 +669,17 @@ function buildTreehouse() {
   // Ladder up to the platform
   b.box(0xa8764a, 0.14, 5.4, 0.14, -0.5, G, -0.35);
   b.box(0xa8764a, 0.14, 5.4, 0.14, 0.5, G, -0.35);
-  for (let i = 0; i < 7; i++) b.box(0xa8764a, 1.2, 0.1, 0.12, 0, G + 0.5 + i * 0.75, -0.35);
+  if (!liteMode) {
+    for (let i = 0; i < 7; i++) b.box(0xa8764a, 1.2, 0.1, 0.12, 0, G + 0.5 + i * 0.75, -0.35);
+  }
 
   // Garden
   b.box(PATH_COLOR, 1.8, 0.06, 11, 0, G, 5.3);
   gardenFence(b, 0xb98a5a);
-  b.cyl(0xc99560, 1.0, 0.45, -3, G, 2.5);         // tree stump seats
-  b.cyl(0xc99560, 1.0, 0.45, 3, G, 3.2);
+  if (!liteMode) {
+    b.cyl(0xc99560, 1.0, 0.45, -3, G, 2.5);       // tree stump seats
+    b.cyl(0xc99560, 1.0, 0.45, 3, G, 3.2);
+  }
   flowerBed(b, -5.5, 7, 3.4, 2.2);
   flowerBed(b, 5.5, 7, 3.4, 2.2);
   bush(b, -7, 0);
@@ -747,7 +792,7 @@ function buildTraditional() {
   return b.build();
 }
 
-// ---------- Put the houses on their plots (one InstancedMesh per style) ----------
+// ---------- Build each house twice: DETAILED (near you) and LITE (far away) ----------
 const houseMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
 const houseBuilders = {
   cottage: buildCottage,
@@ -755,28 +800,79 @@ const houseBuilders = {
   modern: buildModern,
   traditional: buildTraditional
 };
-const houseMeshes = {}; // kept so later phases can update houses
 
+const houseGeos = {};
 HOUSE_STYLES.forEach((style) => {
-  const list = PLOTS.filter((plot) => plot.house === style);
-  if (list.length === 0) return;
-
-  const mesh = new THREE.InstancedMesh(houseBuilders[style](), houseMaterial, list.length);
-  list.forEach((plot, i) => {
-    dummy.position.set(plot.x, 0, plot.z);
-    dummy.rotation.set(0, plot.facing, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  houseMeshes[style] = mesh;
+  liteMode = false;
+  const detail = houseBuilders[style]();
+  liteMode = true;
+  const lite = houseBuilders[style]();
+  liteMode = false;
+  houseGeos[style] = { detail, lite };
 });
 
+// ---------- Chunks: the town is cut into blocks of 3 x 3 plots ----------
+// Each block has its own InstancedMeshes. The browser skips blocks that are off-screen,
+// and blocks near you show the detailed houses while far blocks show the lite houses.
+const CHUNK = 3;
+const DETAIL_DIST = 160;   // blocks closer than this (metres) show detailed houses
+const houseChunks = [];    // kept so later phases can update houses
+const chunkMap = {};
+
+PLOTS.forEach((plot) => {
+  const kx = Math.floor(plot.gx / CHUNK);
+  const kz = Math.floor(plot.gz / CHUNK);
+  const key = `${kx},${kz}`;
+  if (!chunkMap[key]) {
+    chunkMap[key] = { plots: [], cx: 0, cz: 0, detail: [], lite: [] };
+    houseChunks.push(chunkMap[key]);
+  }
+  chunkMap[key].plots.push(plot);
+});
+
+houseChunks.forEach((chunk) => {
+  let sumX = 0;
+  let sumZ = 0;
+  chunk.plots.forEach((p) => { sumX += p.x; sumZ += p.z; });
+  chunk.cx = sumX / chunk.plots.length;
+  chunk.cz = sumZ / chunk.plots.length;
+
+  HOUSE_STYLES.forEach((style) => {
+    const list = chunk.plots.filter((p) => p.house === style);
+    if (list.length === 0) return;
+
+    ['detail', 'lite'].forEach((kind) => {
+      const mesh = new THREE.InstancedMesh(houseGeos[style][kind], houseMaterial, list.length);
+      list.forEach((plot, i) => {
+        dummy.position.set(plot.x, 0, plot.z);
+        dummy.rotation.set(0, plot.facing, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.computeBoundingSphere) mesh.computeBoundingSphere();
+      mesh.visible = false; // the LOD update below decides what to show
+      scene.add(mesh);
+      chunk[kind].push(mesh);
+    });
+  });
+});
+
+// Decides which houses are drawn: detailed near you, lite far away, none when you are inside a house.
+function updateHouseLOD() {
+  houseChunks.forEach((chunk) => {
+    const d = Math.hypot(chunk.cx - player.x, chunk.cz - player.z);
+    const outdoors = !inside;
+    const showDetail = outdoors && d < DETAIL_DIST;
+    const showLite = outdoors && !showDetail && d < 1200;
+    chunk.detail.forEach((m) => { m.visible = showDetail; });
+    chunk.lite.forEach((m) => { m.visible = showLite; });
+  });
+}
+
 // =====================================================
-// 6c. ROADS AND BRIDGE (data arrays + one merged shape)
+// 6c. ROADS AND BRIDGE (made from the plot grid, one merged shape)
 // =====================================================
 
 // ---------- Road settings ----------
@@ -786,11 +882,16 @@ const BRIDGE_TOP = 0.55;    // height of the bridge deck above the ground
 const BRIDGE_RAMP = 6;      // length of the sloping part at each end of the bridge
 
 // ---------- THE ROAD DATA ----------
-// Nodes are junctions and road ends. To grow the road network later,
-// add a node and add a link to it in ROADS below.
+// Nodes are junctions and road ends. Links join two nodes in a straight line.
+// The street lines run at x = i * 36 and z = j * 36. A road is made on every street line.
 //   id  : unique name
 //   x,z : position in the world
 //   pad : false = no junction square here (the road just carries on)
+const ROAD_I_MIN = GRID_MIN_X;       // street lines x = -432 ... +72
+const ROAD_I_MAX = GRID_MAX_X + 1;
+const ROAD_J_MIN = GRID_MIN_Z;       // street lines z = -648 ... +648
+const ROAD_J_MAX = GRID_MAX_Z + 1;
+
 const ROAD_NODES = [
   // Where the four spokes meet the edge of the square (hidden inside the plaza)
   { id: 'sqN', x: 0, z: -SQUARE_RADIUS, pad: false },
@@ -798,64 +899,45 @@ const ROAD_NODES = [
   { id: 'sqE', x: SQUARE_RADIUS, z: 0, pad: false },
   { id: 'sqW', x: -SQUARE_RADIUS, z: 0, pad: false },
 
-  // The ring road around the square (on the street lines x/z = +-36)
-  { id: 'N', x: 0, z: -36 },
-  { id: 'S', x: 0, z: 36 },
-  { id: 'E', x: 36, z: 0 },
-  { id: 'W', x: -36, z: 0 },
-  { id: 'NE', x: 36, z: -36 },
-  { id: 'SE', x: 36, z: 36 },
-  { id: 'SW', x: -36, z: 36 },
-  { id: 'NW', x: -36, z: -36 },
-
-  // Roads leading away from the ring
-  { id: 'NE2', x: 72, z: -36 },
-  { id: 'SE2', x: 72, z: 36 },
-  { id: 'SW2', x: -72, z: 36 },
-  { id: 'NW2', x: -72, z: -36 },
-  { id: 'N2', x: 0, z: -72 },
-  { id: 'S2', x: 0, z: 72 },
-  { id: 'farW', x: -108, z: 0 },
-
   // East road, over the river
   { id: 'bridgeW', x: 120, z: 0, pad: false },
   { id: 'bridgeE', x: 160, z: 0, pad: false },
   { id: 'farE', x: 200, z: 0 }
 ];
 
-// Links between two nodes. Roads must run straight west-east or north-south.
-// type 'bridge' draws a bridge (for now bridges must run west-east).
 const ROADS = [
-  // Spokes: the square to the ring
-  { from: 'sqN', to: 'N' },
-  { from: 'sqS', to: 'S' },
-  { from: 'sqE', to: 'E' },
-  { from: 'sqW', to: 'W' },
-
-  // The ring
-  { from: 'N', to: 'NE' },
-  { from: 'NE', to: 'E' },
-  { from: 'E', to: 'SE' },
-  { from: 'SE', to: 'S' },
-  { from: 'S', to: 'SW' },
-  { from: 'SW', to: 'W' },
-  { from: 'W', to: 'NW' },
-  { from: 'NW', to: 'N' },
-
-  // Roads leading away (these serve the houses at the corners)
-  { from: 'NE', to: 'NE2' },
-  { from: 'SE', to: 'SE2' },
-  { from: 'SW', to: 'SW2' },
-  { from: 'NW', to: 'NW2' },
-  { from: 'N', to: 'N2' },
-  { from: 'S', to: 'S2' },
-  { from: 'W', to: 'farW' },
+  // Spokes: the square to the ring road around it
+  { from: 'sqN', to: 'n_0_-1' },
+  { from: 'sqS', to: 'n_0_1' },
+  { from: 'sqE', to: 'n_1_0' },
+  { from: 'sqW', to: 'n_-1_0' },
 
   // East road with the bridge
-  { from: 'E', to: 'bridgeW' },
+  { from: 'n_2_0', to: 'bridgeW' },
   { from: 'bridgeW', to: 'bridgeE', type: 'bridge' },
   { from: 'bridgeE', to: 'farE' }
 ];
+
+// A junction at every crossing of two street lines (except the very middle: that is the square).
+for (let i = ROAD_I_MIN; i <= ROAD_I_MAX; i++) {
+  for (let j = ROAD_J_MIN; j <= ROAD_J_MAX; j++) {
+    if (i === 0 && j === 0) continue;
+    ROAD_NODES.push({ id: `n_${i}_${j}`, x: i * PLOT_PITCH, z: j * PLOT_PITCH });
+  }
+}
+
+// A road between every two neighbouring junctions.
+for (let i = ROAD_I_MIN; i <= ROAD_I_MAX; i++) {
+  for (let j = ROAD_J_MIN; j <= ROAD_J_MAX; j++) {
+    if (i === 0 && j === 0) continue;
+    if (i < ROAD_I_MAX && !(i + 1 === 0 && j === 0)) {
+      ROADS.push({ from: `n_${i}_${j}`, to: `n_${i + 1}_${j}` });
+    }
+    if (j < ROAD_J_MAX && !(i === 0 && j + 1 === 0)) {
+      ROADS.push({ from: `n_${i}_${j}`, to: `n_${i}_${j + 1}` });
+    }
+  }
+}
 
 // A quick way to find a node by its id.
 const NODE = {};
@@ -1002,18 +1084,6 @@ function isOnBridge(x, z) {
 // =====================================================
 // 6d. RIVER DECORATIONS (stones and swaying reeds on the banks)
 // =====================================================
-
-// A small random number maker with a fixed seed, so the banks look the same every visit.
-function makeRng(seed) {
-  let a = seed;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 const bankRng = makeRng(2026);
 
 // Keep stones and reeds away from the bridge and its road.
@@ -1127,6 +1197,293 @@ reedMesh.frustumCulled = false;
 scene.add(reedMesh);
 
 // =====================================================
+// 6e. TREES (round, tall and pine trees in groves, outside the town)
+// =====================================================
+
+// ---------- Settings ----------
+// The town block (all plots and streets) is kept free of trees.
+const TOWN_MIN_X = (GRID_MIN_X - 1) * PLOT_PITCH;   // -468
+const TOWN_MAX_X = (GRID_MAX_X + 3) * PLOT_PITCH;   // 108
+const TOWN_Z = (GRID_MAX_Z + 3) * PLOT_PITCH;       // 720
+const TREE_ROAD_CLEAR = ROAD_WIDTH / 2 + 5;          // keep trees this far from any road centre line
+const TREE_RIVER_CLEAR = (RIVER_WIDTH + 13) / 2 + 6; // keep trees off the river and its sandy banks
+const GROVE_COUNT = 80;       // number of small forests
+const SINGLE_TREES = 150;     // trees standing alone
+const treeRng = makeRng(777); // fixed seed: the trees are in the same places every visit
+
+// For later phases (the air breeze can raise this number to make trees sway more).
+const treeWindStrength = { value: 1 };
+
+// ---------- Three tree shapes (each one is ONE merged shape) ----------
+const TRUNK = 0x8a5a3a;
+
+function buildRoundTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.9, 2.8, 0, 0, 0);
+  b.ball(0x5fb04f, 5.2, 0, 4.4, 0, 0.9);
+  b.ball(0x6cbc58, 3.6, 1.6, 5.2, 0.6, 0.9);
+  b.ball(0x56a548, 3.4, -1.5, 4.9, -0.8, 0.9);
+  return b.build();
+}
+
+function buildTallTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.8, 3.6, 0, 0, 0);
+  b.ball(0x4f9e4a, 4.2, 0, 6.4, 0, 1.55);
+  b.ball(0x5dae52, 3.0, 0.3, 8.6, 0.2, 1.2);
+  return b.build();
+}
+
+function buildPineTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.7, 2.2, 0, 0, 0);
+  b.cone(0x3f8f5a, 5.6, 3.0, 0, 1.6, 0);
+  b.cone(0x479c60, 4.5, 2.8, 0, 3.6, 0);
+  b.cone(0x4fa668, 3.4, 2.6, 0, 5.5, 0);
+  b.cone(0x58b06f, 2.0, 1.8, 0, 7.3, 0);
+  return b.build();
+}
+
+// ---------- The material (colours come from the shapes, the sway comes from the wind clock) ----------
+const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+treeMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uWind = windUniform;
+  shader.uniforms.uStrength = treeWindStrength;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+#ifdef USE_INSTANCING
+  float sX = length(instanceMatrix[0].xyz);
+  float sY = length(instanceMatrix[1].xyz);
+  float hgt = position.y * sY;
+  float phase = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.17;
+  transformed.x += sin(uWind * 1.1 + phase) * 0.0018 * uStrength * hgt * hgt / sX;
+  transformed.z += cos(uWind * 0.9 + phase) * 0.0013 * uStrength * hgt * hgt / sX;
+#endif`);
+};
+
+// ---------- Rules: where a tree is NOT allowed ----------
+function distToSegment(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+}
+
+function treeSpotIsFree(x, z) {
+  if (Math.hypot(x, z) > 1300) return false;                                   // stay inside the world
+  if (x > TOWN_MIN_X && x < TOWN_MAX_X && Math.abs(z) < TOWN_Z) return false;  // the town
+  if (Math.abs(x - riverX(z)) < TREE_RIVER_CLEAR) return false;                // river and banks
+  for (const road of ROADS) {
+    const A = NODE[road.from];
+    const B = NODE[road.to];
+    if (distToSegment(x, z, A.x, A.z, B.x, B.z) < TREE_ROAD_CLEAR) return false;
+  }
+  return true;
+}
+
+// ---------- Choose the places ----------
+const treeLists = { round: [], tall: [], pine: [] };
+const usedCells = new Set(); // stops two trees from standing on top of each other
+
+function tryPlaceTree(x, z) {
+  if (!treeSpotIsFree(x, z)) return;
+  const cell = `${Math.floor(x / 6)},${Math.floor(z / 6)}`;
+  if (usedCells.has(cell)) return;
+  usedCells.add(cell);
+
+  const r = treeRng();
+  const type = r < 0.4 ? 'round' : r < 0.65 ? 'tall' : 'pine';
+  treeLists[type].push({
+    x,
+    z,
+    size: 0.8 + treeRng() * 0.9,
+    turn: treeRng() * Math.PI * 2,
+    tint: 0.82 + treeRng() * 0.18
+  });
+}
+
+// Small forests
+for (let g = 0; g < GROVE_COUNT; g++) {
+  const angle = treeRng() * Math.PI * 2;
+  const distance = 200 + treeRng() * 900;
+  const cx = Math.cos(angle) * distance;
+  const cz = Math.sin(angle) * distance;
+  const spread = 18 + treeRng() * 22;
+  const count = 10 + Math.floor(treeRng() * 9);
+
+  for (let i = 0; i < count; i++) {
+    const ox = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
+    const oz = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
+    tryPlaceTree(cx + ox, cz + oz);
+  }
+}
+
+// Trees standing alone
+for (let i = 0; i < SINGLE_TREES; i++) {
+  const angle = treeRng() * Math.PI * 2;
+  const distance = 150 + Math.sqrt(treeRng()) * 1000;
+  tryPlaceTree(Math.cos(angle) * distance, Math.sin(angle) * distance);
+}
+
+// ---------- Draw them (one InstancedMesh per tree type) ----------
+const treeBuilders = { round: buildRoundTree, tall: buildTallTree, pine: buildPineTree };
+const treeMeshes = {}; // kept so later phases can find the trees
+const treeTint = new THREE.Color();
+
+Object.keys(treeLists).forEach((type) => {
+  const list = treeLists[type];
+  if (list.length === 0) return;
+
+  const mesh = new THREE.InstancedMesh(treeBuilders[type](), treeMaterial, list.length);
+  list.forEach((tree, i) => {
+    dummy.position.set(tree.x, 0, tree.z);
+    dummy.rotation.set(0, tree.turn, 0);
+    dummy.scale.set(tree.size, tree.size, tree.size);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+
+    treeTint.setRGB(tree.tint, tree.tint, tree.tint); // a little darker or lighter for variety
+    mesh.setColorAt(i, treeTint);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  if (mesh.computeBoundingSphere) mesh.computeBoundingSphere();
+  scene.add(mesh);
+  treeMeshes[type] = mesh;
+});
+
+// =====================================================
+// 6f. INSIDE THE HOUSES (one furnished room for each house style)
+// =====================================================
+// The rooms are built far away from the town (x = 5000 and up). When you go inside,
+// you are moved there. When you go out, you are moved back to the door.
+const ROOM_HALF_W = 7;     // the room is 14 m wide ...
+const ROOM_HALF_D = 5;     // ... and 10 m deep
+const ROOM_HEIGHT = 3.6;
+
+const INTERIOR_THEMES = {
+  cottage:     { wall: 0xfbe3cf, floor: 0xc99560, accent: 0xc96f5a, sofa: 0xd98f7a, trim: 0xfff4e0 },
+  treehouse:   { wall: 0xd9a566, floor: 0xa8764a, accent: 0x6dbb5a, sofa: 0x7fa86a, trim: 0x8a5a3a },
+  modern:      { wall: 0xf4efe6, floor: 0xcfc3ae, accent: 0x3f8f8a, sofa: 0x4a4440, trim: 0xe9dfd0 },
+  traditional: { wall: 0xe2a97c, floor: 0x9b6a45, accent: 0x8d3b32, sofa: 0xb5523b, trim: 0xfff4e0 }
+};
+
+function buildInterior(style) {
+  const t = INTERIOR_THEMES[style];
+  const b = makeBuilder();
+  const hw = ROOM_HALF_W;
+  const hd = ROOM_HALF_D;
+  const H = ROOM_HEIGHT;
+  const WOOD = 0xb98a5a;
+  const WOOD_DK = 0x7a5237;
+  const GLASS_IN = 0xdff4ff;
+  const books = [0xd9534f, 0x5bc0de, 0xf0ad4e, 0x5cb85c, 0x9b59b6];
+
+  // Floor, ceiling and four walls (the floor's top is at y = 0)
+  b.box(t.floor, 15, 0.3, 11, 0, -0.3, 0);
+  b.box(t.trim, 15, 0.3, 11, 0, H, 0);
+  b.box(t.wall, 15, H, 0.4, 0, 0, -hd - 0.2);   // north wall
+  b.box(t.wall, 15, H, 0.4, 0, 0, hd + 0.2);    // south wall (the door is here)
+  b.box(t.wall, 0.4, H, 10, -hw - 0.2, 0, 0);   // west wall
+  b.box(t.wall, 0.4, H, 10, hw + 0.2, 0, 0);    // east wall
+
+  // Skirting boards along the bottom of the walls
+  b.box(t.trim, 14, 0.25, 0.1, 0, 0, -hd + 0.05);
+  b.box(t.trim, 0.1, 0.25, 10, -hw + 0.05, 0, 0);
+  b.box(t.trim, 0.1, 0.25, 10, hw - 0.05, 0, 0);
+
+  // The door (south wall, in the middle)
+  b.box(t.trim, 2.3, 2.9, 0.1, 0, 0, hd - 0.05);
+  b.box(WOOD_DK, 1.8, 2.5, 0.12, 0, 0, hd - 0.07);
+  b.box(0xf2c94c, 0.12, 0.12, 0.08, 0.6, 1.2, hd - 0.15);
+
+  // Windows: two on the north wall, one on the east wall (soft daylight colour)
+  [-3.6, 3.6].forEach((x) => {
+    b.box(t.trim, 3.2, 2.0, 0.08, x, 0.9, -hd + 0.04);
+    b.box(GLASS_IN, 2.8, 1.6, 0.1, x, 1.1, -hd + 0.05);
+  });
+  b.box(t.trim, 0.08, 2.0, 3.2, hw - 0.04, 0.9, 0.5);
+  b.box(GLASS_IN, 0.1, 1.6, 2.8, hw - 0.05, 1.1, 0.5);
+
+  // A picture above the sofa
+  b.box(WOOD_DK, 1.8, 1.2, 0.06, 0, 1.5, -hd + 0.03);
+  b.box(t.accent, 1.5, 0.9, 0.08, 0, 1.65, -hd + 0.04);
+
+  // Rug
+  b.box(t.accent, 6, 0.04, 4, 0, 0, 0.6);
+
+  // Sofa (against the north wall)
+  b.box(t.sofa, 3.6, 0.7, 1.3, 0, 0, -hd + 1.3);        // seat
+  b.box(t.sofa, 3.6, 0.9, 0.35, 0, 0.7, -hd + 0.7);     // back
+  b.box(t.sofa, 0.4, 1.1, 1.3, -1.9, 0, -hd + 1.3);     // arms
+  b.box(t.sofa, 0.4, 1.1, 1.3, 1.9, 0, -hd + 1.3);
+
+  // Coffee table
+  b.box(WOOD, 1.8, 0.1, 1.0, 0, 0.5, 0.2);
+  b.box(WOOD_DK, 0.12, 0.5, 0.8, -0.8, 0, 0.2);
+  b.box(WOOD_DK, 0.12, 0.5, 0.8, 0.8, 0, 0.2);
+
+  // Bookshelf (west wall) with books
+  b.box(WOOD_DK, 0.6, 2.6, 3.4, -hw + 0.3, 0, -1);
+  for (let row = 0; row < 3; row++) {
+    for (let i = 0; i < 7; i++) {
+      b.box(books[(row + i) % books.length], 0.35, 0.55, 0.28, -hw + 0.65, 0.2 + row * 0.8, -2.4 + i * 0.42);
+    }
+  }
+
+  // Bed (east wall, in the north corner)
+  const bedX = hw - 1.8;
+  b.box(WOOD, 2.6, 0.5, 3.6, bedX, 0, -2.8);            // frame
+  b.box(0xfff4e0, 2.4, 0.3, 3.4, bedX, 0.5, -2.8);      // mattress
+  b.box(t.accent, 2.4, 0.12, 2.2, bedX, 0.8, -2.3);     // blanket
+  b.box(0xffffff, 1.0, 0.2, 0.7, bedX, 0.8, -4.2);      // pillow
+  b.box(WOOD_DK, 2.6, 1.3, 0.2, bedX, 0, -4.7);         // headboard
+
+  // Dining table and two chairs (south-east)
+  b.box(WOOD, 2.6, 0.12, 1.6, 3.8, 0.75, 2.4);
+  [[-1.1, -0.6], [1.1, -0.6], [-1.1, 0.6], [1.1, 0.6]].forEach(([ox, oz]) => {
+    b.box(WOOD_DK, 0.14, 0.75, 0.14, 3.8 + ox, 0, 2.4 + oz);
+  });
+  [-1.3, 1.3].forEach((oz) => {
+    b.box(t.accent, 0.7, 0.12, 0.7, 3.8, 0.45, 2.4 + oz);
+    b.box(WOOD_DK, 0.1, 0.45, 0.1, 3.5, 0, 2.4 + oz - 0.28);
+    b.box(WOOD_DK, 0.1, 0.45, 0.1, 4.1, 0, 2.4 + oz - 0.28);
+    b.box(t.accent, 0.7, 0.6, 0.1, 3.8, 0.55, 2.4 + oz + (oz < 0 ? -0.3 : 0.3));
+  });
+
+  // Plants in the two south corners
+  [[-hw + 0.8, hd - 0.8], [hw - 0.8, hd - 0.8]].forEach(([x, z]) => {
+    b.cyl(0xd7a77a, 0.8, 0.7, x, 0, z);
+    b.ball(LEAF, 1.5, x, 1.4, z);
+  });
+
+  // Standing lamp and a hanging lamp
+  b.cyl(WOOD_DK, 0.1, 1.6, -3.2, 0, -hd + 0.8);
+  b.cyl(0xfff0b0, 0.7, 0.5, -3.2, 1.5, -hd + 0.8);
+  b.cyl(WOOD_DK, 0.06, 1.0, 0, H - 1.0, 0.6);
+  b.ball(0xfff0b0, 1.0, 0, H - 1.15, 0.6, 0.7);
+
+  // Extra for the treehouse: a tree trunk through the room and leaves on the ceiling
+  if (style === 'treehouse') {
+    b.cyl(0x7d5232, 1.8, H, -4.5, 0, 2.5);
+    [[-5.5, -3.5], [5.5, 3.5], [-5.5, 3.5]].forEach(([x, z]) => b.ball(0x6dbb5a, 2.6, x, H - 0.4, z, 0.6));
+  }
+
+  return b.build();
+}
+
+const interiors = {};
+HOUSE_STYLES.forEach((style, i) => {
+  const mesh = new THREE.Mesh(buildInterior(style), houseMaterial);
+  mesh.position.set(5000 + i * 100, 0, 0);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  interiors[style] = { mesh, x: 5000 + i * 100, z: 0 };
+});
+
+// =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
 const EYE_HEIGHT = 1.7;      // how high your eyes are above the ground when walking
@@ -1140,6 +1497,9 @@ let flying = false;   // true while in fly mode
 let landing = false;  // true while gently coming down to land
 let vy = 0;           // up/down speed
 const vel = { x: 0, z: 0 }; // sideways speed (used to make flying smooth)
+
+// Inside a house? null = outside. Otherwise { plot, style, x, z } (x, z = the room's middle).
+let inside = null;
 
 // Touch buttons for up/down (true while a finger is holding them)
 let touchUp = false;
@@ -1156,6 +1516,11 @@ window.addEventListener('keydown', (e) => {
   // F toggles fly mode (ignore key repeat, and Ctrl+F / Cmd+F which is "find")
   if (started && e.code === 'KeyF' && !e.repeat && !e.ctrlKey && !e.metaKey) {
     toggleFly();
+  }
+
+  // E uses the door (go inside / go outside)
+  if (started && e.code === 'KeyE' && !e.repeat && !e.ctrlKey && !e.metaKey) {
+    useDoor();
   }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -1268,6 +1633,7 @@ holdButton(downBtn, (v) => { touchDown = v; });
 
 // --- Turning fly mode on and off ---
 function toggleFly() {
+  if (inside) return; // no flying inside a house
   if (!flying) {
     // Take off: a small push upward so we leave the ground.
     flying = true;
@@ -1314,6 +1680,8 @@ function updatePlayer(dt) {
   let speed;
   if (flying) {
     speed = shift ? 30 : 14;          // flying is faster than walking
+  } else if (inside) {
+    speed = shift ? 6 : 3.5;          // calmer pace inside the house
   } else {
     speed = shift ? 12 : 6;
     // Wading through the river slows you down (only when walking, and not on the bridge).
@@ -1380,11 +1748,19 @@ function updatePlayer(dt) {
     }
   }
 
-  // Keep the player inside the world.
-  const distance = Math.hypot(player.x, player.z);
-  if (distance > 1400) {
-    player.x *= 1400 / distance;
-    player.z *= 1400 / distance;
+  if (inside) {
+    // Keep the player inside the room's walls.
+    const maxX = ROOM_HALF_W - 0.6;
+    const maxZ = ROOM_HALF_D - 0.6;
+    player.x = Math.max(inside.x - maxX, Math.min(inside.x + maxX, player.x));
+    player.z = Math.max(inside.z - maxZ, Math.min(inside.z + maxZ, player.z));
+  } else {
+    // Keep the player inside the world.
+    const distance = Math.hypot(player.x, player.z);
+    if (distance > 1400) {
+      player.x *= 1400 / distance;
+      player.z *= 1400 / distance;
+    }
   }
 }
 
@@ -1397,7 +1773,19 @@ const hud = document.getElementById('hud');
 const hudHint = document.getElementById('hudHint');
 const hudAltitude = document.getElementById('hudAltitude');
 const startBtn = document.getElementById('startBtn');
+const doorBtn = document.getElementById('doorBtn');
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+
+// The small help text at the top left.
+function setHint() {
+  if (inside) {
+    hudHint.textContent = 'Inside the house. Walk to the door and press E (or tap the button) to go out.';
+  } else if (isTouchDevice) {
+    hudHint.textContent = 'Left circle: walk. Drag to look. Fly button: fly. Door button: go in.';
+  } else {
+    hudHint.textContent = 'WASD: walk. Shift: run. F: fly. E: door. Space up, Ctrl/C down.';
+  }
+}
 
 startBtn.addEventListener('click', () => {
   started = true;
@@ -1407,19 +1795,22 @@ startBtn.addEventListener('click', () => {
   if (isTouchDevice) {
     joystick.classList.remove('hidden');
     flyButtons.classList.remove('hidden');
-    hudHint.textContent = 'Left circle: walk. Drag to look. Fly button: fly.';
-  } else {
-    hudHint.textContent = 'WASD: walk. Shift: run. F: fly. Space up, Ctrl/C down.';
   }
+  setHint();
 });
 
 // Show the altitude (only touches the page when the text changes).
 let lastAltitudeText = '';
 function updateAltitudeDisplay() {
   const metres = Math.max(0, Math.round(player.y - EYE_HEIGHT));
-  let mode = 'Walking';
-  if (flying) mode = landing ? 'Landing' : 'Flying';
-  const text = `${mode} \u00B7 Altitude: ${metres} m`;
+  let text;
+  if (inside) {
+    text = 'Inside a house';
+  } else {
+    let mode = 'Walking';
+    if (flying) mode = landing ? 'Landing' : 'Flying';
+    text = `${mode} \u00B7 Altitude: ${metres} m`;
+  }
   if (text !== lastAltitudeText) {
     hudAltitude.textContent = text;
     lastAltitudeText = text;
@@ -1433,9 +1824,127 @@ window.addEventListener('resize', () => {
 });
 
 // =====================================================
+// 8b. DOORS (go inside a house and come back out)
+// =====================================================
+// Where you must stand to use each house's door. (x, z) are measured in the HOUSE's own
+// directions: x = right, z = toward the street (the way the house faces).
+const DOOR_SPOTS = {
+  cottage: { x: 0, z: 1.3 },
+  treehouse: { x: 0, z: 1.1 },   // at the bottom of the ladder
+  modern: { x: 0.8, z: 1.7 },
+  traditional: { x: 0, z: 2.4 }
+};
+const DOOR_REACH = 2.4;          // how close you must be (metres)
+
+let doorAction = null;           // 'enter', 'exit' or null
+let doorPlot = null;             // the plot whose door is near you
+let lastDoorText = '';
+
+// Is the player next to the door of a house? Returns that plot, or null.
+function findNearbyDoor() {
+  const gx = Math.floor(player.x / PLOT_PITCH);
+  const gz = Math.floor(player.z / PLOT_PITCH);
+  const plot = PLOT_AT[`${gx},${gz}`];
+  if (!plot || !plot.house) return null;
+
+  const spot = DOOR_SPOTS[plot.house];
+  const dx = player.x - plot.x;
+  const dz = player.z - plot.z;
+  const c = Math.cos(plot.facing);
+  const s = Math.sin(plot.facing);
+  const lx = c * dx - s * dz;    // turn the world position into the house's own directions
+  const lz = s * dx + c * dz;
+  return Math.hypot(lx - spot.x, lz - spot.z) < DOOR_REACH ? plot : null;
+}
+
+// Runs every frame: decides if the door button should be shown.
+function updateDoorPrompt() {
+  let text = '';
+  doorAction = null;
+  doorPlot = null;
+
+  if (inside) {
+    // Near the inside door (the south wall, in the middle)?
+    if (player.z > inside.z + ROOM_HALF_D - 1.8 && Math.abs(player.x - inside.x) < 2.2) {
+      doorAction = 'exit';
+      text = 'Go outside (E)';
+    }
+  } else if (!flying && player.y - EYE_HEIGHT < 3) {
+    doorPlot = findNearbyDoor();
+    if (doorPlot) {
+      doorAction = 'enter';
+      text = doorPlot.house === 'treehouse' ? 'Climb up and go inside (E)' : 'Go inside (E)';
+    }
+  }
+
+  doorBtn.classList.toggle('hidden', doorAction === null);
+  if (text !== lastDoorText && text !== '') {
+    doorBtn.textContent = text;
+  }
+  lastDoorText = text;
+}
+
+function enterHouse(plot) {
+  const room = interiors[plot.house];
+  inside = { plot, style: plot.house, x: room.x, z: room.z };
+  room.mesh.visible = true;
+
+  // No flying inside, and stop any movement.
+  flying = false;
+  landing = false;
+  vy = 0;
+  vel.x = 0;
+  vel.z = 0;
+  updateFlyUI();
+
+  // Appear just inside the door, looking into the room.
+  player.x = room.x;
+  player.z = room.z + ROOM_HALF_D - 1.4;
+  player.y = EYE_HEIGHT;
+  player.yaw = 0;
+  player.pitch = 0;
+
+  updateHouseLOD();
+  setHint();
+}
+
+function exitHouse() {
+  const plot = inside.plot;
+  interiors[inside.style].mesh.visible = false;
+
+  // Stand just outside the door, looking away from the house.
+  const spot = DOOR_SPOTS[plot.house];
+  const lz = spot.z + 0.6;
+  const c = Math.cos(plot.facing);
+  const s = Math.sin(plot.facing);
+  player.x = plot.x + c * spot.x + s * lz;
+  player.z = plot.z - s * spot.x + c * lz;
+  player.y = EYE_HEIGHT;
+  player.yaw = plot.facing + Math.PI;
+  player.pitch = 0.1;
+
+  inside = null;
+  vel.x = 0;
+  vel.z = 0;
+  updateHouseLOD();
+  setHint();
+}
+
+// Pressing E (or the door button) does whatever the door button says.
+function useDoor() {
+  if (doorAction === 'enter' && doorPlot) enterHouse(doorPlot);
+  else if (doorAction === 'exit' && inside) exitHouse();
+}
+
+doorBtn.addEventListener('click', () => {
+  if (started) useDoor();
+});
+
+// =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
 let lastTime = performance.now();
+let lodTimer = 0;
 
 function animate(now) {
   requestAnimationFrame(animate);
@@ -1446,6 +1955,14 @@ function animate(now) {
   if (started) {
     updatePlayer(dt);
     updateAltitudeDisplay();
+    updateDoorPrompt();
+
+    // Every 0.3 seconds, decide which houses are detailed and which are simple.
+    lodTimer += dt;
+    if (lodTimer > 0.3) {
+      lodTimer = 0;
+      updateHouseLOD();
+    }
   }
 
   // Put the camera where the player is.
@@ -1469,160 +1986,7 @@ function animate(now) {
 }
 requestAnimationFrame(animate);
 
-// Everything is built: hide the loading screen and show the main menu.
+// Everything is built: show the right houses, hide the loading screen and show the main menu.
+updateHouseLOD();
 loadingScreen.classList.add('hidden');
 menuScreen.classList.remove('hidden');
-
-// =====================================================
-// 10. TREES (Phase 5) - round, tall and pine trees in groves
-// =====================================================
-
-// ---------- Settings ----------
-const TOWN_HALF = 125;        // no trees inside this square around the middle (houses + empty plots)
-const TREE_ROAD_CLEAR = ROAD_WIDTH / 2 + 5;          // keep trees this far from any road centre line
-const TREE_RIVER_CLEAR = (RIVER_WIDTH + 13) / 2 + 6; // keep trees off the river and its sandy banks
-const GROVE_COUNT = 45;       // number of small forests
-const SINGLE_TREES = 120;     // trees standing alone
-const treeRng = makeRng(777); // fixed seed: the trees are in the same places every visit
-
-// For later phases (the air breeze can raise this number to make trees sway more).
-const treeWindStrength = { value: 1 };
-
-// ---------- Three tree shapes (each one is ONE merged shape) ----------
-const TRUNK = 0x8a5a3a;
-
-function buildRoundTree() {
-  const b = makeBuilder();
-  b.cyl(TRUNK, 0.9, 2.8, 0, 0, 0);
-  b.ball(0x5fb04f, 5.2, 0, 4.4, 0, 0.9);
-  b.ball(0x6cbc58, 3.6, 1.6, 5.2, 0.6, 0.9);
-  b.ball(0x56a548, 3.4, -1.5, 4.9, -0.8, 0.9);
-  return b.build();
-}
-
-function buildTallTree() {
-  const b = makeBuilder();
-  b.cyl(TRUNK, 0.8, 3.6, 0, 0, 0);
-  b.ball(0x4f9e4a, 4.2, 0, 6.4, 0, 1.55);
-  b.ball(0x5dae52, 3.0, 0.3, 8.6, 0.2, 1.2);
-  return b.build();
-}
-
-function buildPineTree() {
-  const b = makeBuilder();
-  b.cyl(TRUNK, 0.7, 2.2, 0, 0, 0);
-  b.cone(0x3f8f5a, 5.6, 3.0, 0, 1.6, 0);
-  b.cone(0x479c60, 4.5, 2.8, 0, 3.6, 0);
-  b.cone(0x4fa668, 3.4, 2.6, 0, 5.5, 0);
-  b.cone(0x58b06f, 2.0, 1.8, 0, 7.3, 0);
-  return b.build();
-}
-
-// ---------- The material (colours come from the shapes, the sway comes from the wind clock) ----------
-const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
-treeMaterial.onBeforeCompile = (shader) => {
-  shader.uniforms.uWind = windUniform;
-  shader.uniforms.uStrength = treeWindStrength;
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
-    .replace('#include <begin_vertex>', `#include <begin_vertex>
-#ifdef USE_INSTANCING
-  float sX = length(instanceMatrix[0].xyz);
-  float sY = length(instanceMatrix[1].xyz);
-  float hgt = position.y * sY;
-  float phase = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.17;
-  transformed.x += sin(uWind * 1.1 + phase) * 0.0018 * uStrength * hgt * hgt / sX;
-  transformed.z += cos(uWind * 0.9 + phase) * 0.0013 * uStrength * hgt * hgt / sX;
-#endif`);
-};
-
-// ---------- Rules: where a tree is NOT allowed ----------
-function distToSegment(px, pz, ax, az, bx, bz) {
-  const dx = bx - ax;
-  const dz = bz - az;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz || 1)));
-  return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
-}
-
-function treeSpotIsFree(x, z) {
-  if (Math.hypot(x, z) > 1300) return false;                           // stay inside the world
-  if (Math.abs(x) < TOWN_HALF && Math.abs(z) < TOWN_HALF) return false; // town, plots, square
-  if (Math.abs(x - riverX(z)) < TREE_RIVER_CLEAR) return false;        // river and banks
-  for (const road of ROADS) {
-    const A = NODE[road.from];
-    const B = NODE[road.to];
-    if (distToSegment(x, z, A.x, A.z, B.x, B.z) < TREE_ROAD_CLEAR) return false;
-  }
-  return true;
-}
-
-// ---------- Choose the places ----------
-const treeLists = { round: [], tall: [], pine: [] };
-const usedCells = new Set(); // stops two trees from standing on top of each other
-
-function tryPlaceTree(x, z) {
-  if (!treeSpotIsFree(x, z)) return;
-  const cell = `${Math.floor(x / 6)},${Math.floor(z / 6)}`;
-  if (usedCells.has(cell)) return;
-  usedCells.add(cell);
-
-  const r = treeRng();
-  const type = r < 0.4 ? 'round' : r < 0.65 ? 'tall' : 'pine';
-  treeLists[type].push({
-    x,
-    z,
-    size: 0.8 + treeRng() * 0.9,
-    turn: treeRng() * Math.PI * 2,
-    tint: 0.82 + treeRng() * 0.18
-  });
-}
-
-// Small forests
-for (let g = 0; g < GROVE_COUNT; g++) {
-  const angle = treeRng() * Math.PI * 2;
-  const distance = 140 + treeRng() * 560;
-  const cx = Math.cos(angle) * distance;
-  const cz = Math.sin(angle) * distance;
-  const spread = 18 + treeRng() * 22;
-  const count = 10 + Math.floor(treeRng() * 9);
-
-  for (let i = 0; i < count; i++) {
-    const ox = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
-    const oz = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
-    tryPlaceTree(cx + ox, cz + oz);
-  }
-}
-
-// Trees standing alone
-for (let i = 0; i < SINGLE_TREES; i++) {
-  const angle = treeRng() * Math.PI * 2;
-  const distance = 130 + Math.sqrt(treeRng()) * 770;
-  tryPlaceTree(Math.cos(angle) * distance, Math.sin(angle) * distance);
-}
-
-// ---------- Draw them (one InstancedMesh per tree type) ----------
-const treeBuilders = { round: buildRoundTree, tall: buildTallTree, pine: buildPineTree };
-const treeMeshes = {}; // kept so later phases can find the trees
-const treeTint = new THREE.Color();
-
-Object.keys(treeLists).forEach((type) => {
-  const list = treeLists[type];
-  if (list.length === 0) return;
-
-  const mesh = new THREE.InstancedMesh(treeBuilders[type](), treeMaterial, list.length);
-  list.forEach((tree, i) => {
-    dummy.position.set(tree.x, 0, tree.z);
-    dummy.rotation.set(0, tree.turn, 0);
-    dummy.scale.set(tree.size, tree.size, tree.size);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-
-    treeTint.setRGB(tree.tint, tree.tint, tree.tint); // a little darker or lighter for variety
-    mesh.setColorAt(i, treeTint);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  treeMeshes[type] = mesh;
-});
