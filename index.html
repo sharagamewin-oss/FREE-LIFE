@@ -62,11 +62,22 @@
   <div id="authBar">
     <span id="authName" class="hidden"></span>
     <span id="coinText" class="hidden"></span>
+    <button id="houseBtn" class="hidden">My House</button>
     <button id="authBtn" class="hidden">Sign in with Google</button>
   </div>
 
   <!-- Buy button (appears at the door of a house) -->
   <button id="claimBtn" class="hidden">Buy this house</button>
+
+  <!-- My house panel (requests and members) -->
+  <div id="housePanel" class="hidden">
+    <div id="housePaper">
+      <h2>MY HOUSE</h2>
+      <div id="housePanelBody"></div>
+      <p id="housePanelMsg"></p>
+      <div id="houseButtons"><button id="houseClose">Close</button></div>
+    </div>
+  </div>
 
   <!-- House agreement paper -->
   <div id="agreement" class="hidden">
