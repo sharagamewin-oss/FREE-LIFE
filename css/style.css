@@ -389,3 +389,107 @@ html, body {
 
 #paperButtons button:disabled { opacity: 0.5; cursor: default; }
 #paperButtons #paperNo { background: #9a7b5a; box-shadow: 0 3px 0 #6f563c; }
+
+/* My House button and panel */
+#houseBtn {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: bold;
+  color: #7a3b22;
+  background: #fff1d0;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 16px;
+  box-shadow: 0 3px 0 #e0a56a;
+  cursor: pointer;
+}
+
+#housePanel {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(30, 20, 10, 0.55);
+  z-index: 60;
+  padding: 16px;
+}
+
+#housePanel.hidden { display: none; }
+
+#housePaper {
+  width: 100%;
+  max-width: 460px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #fbf3dc;
+  color: #4a2f1b;
+  border: 3px double #b98a4e;
+  border-radius: 6px;
+  padding: 22px 24px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+#housePaper h2 {
+  margin: 0 0 10px;
+  text-align: center;
+  letter-spacing: 0.12em;
+  font-size: 24px;
+}
+
+#housePaper h3 {
+  margin: 14px 0 6px;
+  font-size: 16px;
+  color: #8a6a44;
+}
+
+.houseRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px dotted #c9a972;
+  font-size: 15px;
+}
+
+.houseRow .grow { flex: 1 1 140px; }
+.houseNote { font-size: 14px; font-style: italic; color: #8a6a44; margin: 4px 0; }
+
+.houseRow select {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 5px;
+  border-radius: 6px;
+  border: 1px solid #c9a972;
+  background: #fffaf0;
+}
+
+.houseRow button,
+#houseButtons button {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: bold;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #fff;
+  background: #3f8f4f;
+  box-shadow: 0 2px 0 #2b6636;
+}
+
+.houseRow button.no,
+#houseButtons button { background: #9a7b5a; box-shadow: 0 2px 0 #6f563c; }
+.houseRow button:disabled { opacity: 0.5; cursor: default; }
+
+#housePanelMsg {
+  min-height: 18px;
+  margin: 8px 0;
+  font-size: 14px;
+  font-weight: bold;
+  color: #b3261e;
+}
+
+#houseButtons { display: flex; justify-content: center; }
