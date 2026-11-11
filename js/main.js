@@ -264,6 +264,456 @@ squareRing.position.y = 0.32;
 scene.add(squareRing);
 
 // =====================================================
+// 6b. PLOTS (the data array) AND HOUSES
+// =====================================================
+
+// ---------- The plot grid ----------
+// Plot centres sit every 36 m. Each plot is 24 m wide, so a 12 m "street line"
+// is left between plots (at x or z = 0, +-36, +-72 ...). Roads will go there in Phase 3.
+const PLOT_PITCH = 36;
+const PLOT_SIZE = 24;
+const GRID_MIN = -3;   // grid columns/rows from -3 to 2 (centres at -90 ... +90)
+const GRID_MAX = 2;
+const HOUSE_STYLES = ['cottage', 'treehouse', 'modern', 'traditional'];
+const PAD_TOP = 0.1;   // height of the plot pads; houses are built on top of it
+
+// THE DATA ARRAY. Every plot is one object. Later, Firebase can fill in
+// ownerId and house for each plot, and the world will draw itself from this list.
+//   id      : unique name of the plot
+//   x, z    : centre of the plot in the world
+//   facing  : the direction the front door looks (radians)
+//   ownerId : null = nobody owns it yet
+//   house   : null = empty plot, or 'cottage' | 'treehouse' | 'modern' | 'traditional'
+const PLOTS = [];
+
+// Does this plot touch the town square (plus a little space around it)?
+function plotTouchesSquare(x, z) {
+  const half = PLOT_SIZE / 2;
+  const dx = Math.max(Math.abs(x) - half, 0);
+  const dz = Math.max(Math.abs(z) - half, 0);
+  return Math.hypot(dx, dz) < SQUARE_RADIUS + 1.5 + 8;
+}
+
+// Does this plot touch the river (including its sandy bank, plus a little space)?
+function plotTouchesRiver(x, z) {
+  const half = PLOT_SIZE / 2;
+  const clearance = (RIVER_WIDTH + 8) / 2 + 6;
+  for (let dz = -half; dz <= half + 0.01; dz += 3) {
+    const rx = riverX(z + dz);
+    if (x + half > rx - clearance && x - half < rx + clearance) return true;
+  }
+  return false;
+}
+
+for (let gz = GRID_MIN; gz <= GRID_MAX; gz++) {
+  for (let gx = GRID_MIN; gx <= GRID_MAX; gx++) {
+    const x = (gx + 0.5) * PLOT_PITCH;
+    const z = (gz + 0.5) * PLOT_PITCH;
+    if (plotTouchesSquare(x, z) || plotTouchesRiver(x, z)) continue;
+
+    // The front door looks toward the square, along the stronger direction,
+    // so every door faces a street line.
+    let faceX = 0;
+    let faceZ = 0;
+    if (Math.abs(x) > Math.abs(z)) faceX = -Math.sign(x);
+    else faceZ = -Math.sign(z);
+
+    // For now: plots close to the square get a demo house, the others stay empty.
+    const isNear = Math.hypot(x, z) < 85;
+    PLOTS.push({
+      id: `plot_${gx}_${gz}`,
+      gx,
+      gz,
+      x,
+      z,
+      facing: Math.atan2(faceX, faceZ),
+      ownerId: null,
+      house: isNear ? HOUSE_STYLES[((gx - GRID_MIN) + 2 * (gz - GRID_MIN)) % 4] : null
+    });
+  }
+}
+
+// ---------- Plot pads (flat marks on the grass, one InstancedMesh each) ----------
+const dummy = new THREE.Object3D();
+
+function makePads(width, height, color) {
+  const mesh = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshLambertMaterial({ color }),
+    PLOTS.length
+  );
+  PLOTS.forEach((plot, i) => {
+    dummy.position.set(plot.x, height / 2, plot.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(width, height, width);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+}
+makePads(PLOT_SIZE, 0.07, 0xe8d9a8);          // sandy border
+makePads(PLOT_SIZE - 1.2, PAD_TOP, 0xa9dc78); // soft green lawn
+
+// ---------- A tiny "shape builder" ----------
+// It lets us build a house from simple parts (boxes, balls, cylinders...), each with
+// its own colour, and joins them into ONE shape. One shape = very light for phones.
+const U_BOX = new THREE.BoxGeometry(1, 1, 1);
+const U_CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 14);
+const U_CONE = new THREE.ConeGeometry(0.5, 1, 12);
+const U_BALL = new THREE.SphereGeometry(0.5, 8, 6);
+const U_DOT = new THREE.SphereGeometry(0.5, 6, 4);          // tiny flowers
+const U_PYR = new THREE.ConeGeometry(0.7071, 1, 4).rotateY(Math.PI / 4); // square pyramid, side = 1
+
+// A flat triangle (front and back face only) used to fill the end of a pitched roof.
+const U_GABLE = (() => {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([
+    -0.5, 0, 0.5,   0.5, 0, 0.5,   0, 1, 0.5,
+     0.5, 0, -0.5, -0.5, 0, -0.5,  0, 1, -0.5
+  ], 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute([
+    0, 0, 1, 0, 0, 1, 0, 0, 1,
+    0, 0, -1, 0, 0, -1, 0, 0, -1
+  ], 3));
+  return g;
+})();
+
+function makeBuilder() {
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const q = new THREE.Quaternion();
+  const eul = new THREE.Euler();
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  const c = new THREE.Color();
+
+  // Adds one part: shape, colour, centre position, size, rotation.
+  function add(geo, color, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) {
+    eul.set(rx, ry, rz);
+    q.setFromEuler(eul);
+    p.set(x, y, z);
+    s.set(sx, sy, sz);
+    m.compose(p, q, s);
+
+    const g = geo.index ? geo.toNonIndexed() : geo.clone();
+    g.applyMatrix4(m);
+    c.set(color);
+
+    const pa = g.attributes.position.array;
+    const na = g.attributes.normal.array;
+    for (let i = 0; i < pa.length; i++) {
+      pos.push(pa[i]);
+      nor.push(na[i]);
+    }
+    for (let i = 0; i < pa.length / 3; i++) col.push(c.r, c.g, c.b);
+    g.dispose();
+  }
+
+  return {
+    // For these, (x, y, z) is the middle of the BOTTOM of the part.
+    box(color, w, h, d, x, y, z) { add(U_BOX, color, x, y + h / 2, z, w, h, d); },
+    cyl(color, dia, h, x, y, z) { add(U_CYL, color, x, y + h / 2, z, dia, h, dia); },
+    cone(color, dia, h, x, y, z) { add(U_CONE, color, x, y + h / 2, z, dia, h, dia); },
+    pyramid(color, w, h, d, x, y, z) { add(U_PYR, color, x, y + h / 2, z, w, h, d); },
+    gable(color, w, h, d, x, y, z) { add(U_GABLE, color, x, y, z, w, h, d); },
+
+    // For these, (x, y, z) is the CENTRE of the part.
+    ball(color, dia, x, y, z, squash = 1) { add(U_BALL, color, x, y, z, dia, dia * squash, dia); },
+    dot(color, dia, x, y, z) { add(U_DOT, color, x, y, z, dia, dia, dia); },
+    cylZ(color, dia, len, x, y, z) { add(U_CYL, color, x, y, z, dia, len, dia, Math.PI / 2, 0, 0); },
+    slab(color, w, h, d, x, y, z, rx, ry, rz) { add(U_BOX, color, x, y, z, w, h, d, rx, ry, rz); },
+
+    build() {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      return g;
+    }
+  };
+}
+
+// ---------- Shared colours and small pieces ----------
+const G = PAD_TOP;           // ground level inside a plot
+const GLASS = 0xbfe6f5;
+const WHITE = 0xfff4e0;
+const PATH_COLOR = 0xe0d3b8;
+const WOOD_DARK = 0x8a5a3a;
+const LEAF = 0x62b552;
+const FLOWER_COLORS = [0xf48fb1, 0xffd54f, 0xffffff, 0xff8a65];
+
+// A window on a front wall. (x, y) = middle-bottom of the glass. Zf = the wall's z.
+function frontWindow(b, x, y, Zf, w, h, frameCol, glassCol) {
+  b.box(frameCol, w + 0.4, h + 0.4, 0.16, x, y - 0.2, Zf + 0.04);
+  b.box(glassCol, w, h, 0.2, x, y, Zf + 0.04);
+  b.box(frameCol, 0.1, h, 0.04, x, y, Zf + 0.16);
+  b.box(frameCol, w, 0.1, 0.04, x, y + h / 2 - 0.05, Zf + 0.16);
+}
+
+// A window on a side wall. side = +1 (right wall) or -1 (left wall). Xf = the wall's x.
+function sideWindow(b, side, z, y, Xf, w, h, frameCol, glassCol) {
+  b.box(frameCol, 0.16, h + 0.4, w + 0.4, Xf + side * 0.04, y - 0.2, z);
+  b.box(glassCol, 0.2, h, w, Xf + side * 0.04, y, z);
+  b.box(frameCol, 0.04, h, 0.1, Xf + side * 0.16, y, z);
+  b.box(frameCol, 0.04, 0.1, w, Xf + side * 0.16, y + h / 2 - 0.05, z);
+}
+
+// Fence pieces
+function fenceX(b, color, z, x1, x2) {
+  const len = x2 - x1;
+  const n = Math.max(1, Math.round(len / 1.5));
+  for (let i = 0; i <= n; i++) b.box(color, 0.22, 1.0, 0.22, x1 + (len * i) / n, G, z);
+  b.box(color, len, 0.12, 0.1, (x1 + x2) / 2, G + 0.3, z);
+  b.box(color, len, 0.12, 0.1, (x1 + x2) / 2, G + 0.7, z);
+}
+
+function fenceZ(b, color, x, z1, z2) {
+  const len = z2 - z1;
+  const n = Math.max(1, Math.round(len / 1.5));
+  for (let i = 0; i <= n; i++) b.box(color, 0.22, 1.0, 0.22, x, G, z1 + (len * i) / n);
+  b.box(color, 0.1, 0.12, len, x, G + 0.3, (z1 + z2) / 2);
+  b.box(color, 0.1, 0.12, len, x, G + 0.7, (z1 + z2) / 2);
+}
+
+// Fence around the front garden, with a gate gap in the middle.
+function gardenFence(b, color) {
+  fenceX(b, color, 11, -11, -1.4);
+  fenceX(b, color, 11, 1.4, 11);
+  fenceZ(b, color, -11, -6, 11);
+  fenceZ(b, color, 11, -6, 11);
+}
+
+// A small bed of flowers.
+function flowerBed(b, x, z, w, d) {
+  b.box(0x7a5237, w, 0.18, d, x, G, z);
+  const n = Math.round(w * d * 0.9);
+  for (let i = 0; i < n; i++) {
+    const fx = x + (Math.random() - 0.5) * (w - 0.6);
+    const fz = z + (Math.random() - 0.5) * (d - 0.6);
+    b.dot(0x5fae4e, 0.45, fx, G + 0.38, fz);
+    b.dot(FLOWER_COLORS[i % FLOWER_COLORS.length], 0.42, fx, G + 0.7, fz);
+  }
+}
+
+// A round bush.
+function bush(b, x, z, size = 1.9) {
+  b.ball(LEAF, size, x, G + size * 0.42, z, 0.85);
+}
+
+// ---------- STYLE 1: COTTAGE (round, warm, thatched) ----------
+function buildCottage() {
+  const b = makeBuilder();
+  const Zf = -0.5; // the front wall is at z = -0.5
+
+  b.box(0xfbe3cf, 9, 4, 8, 0, G, -4.5);                    // walls
+  b.pyramid(0xd9a441, 10.8, 3.6, 9.8, 0, G + 4, -4.5);     // cosy roof
+  b.box(0x9b8f86, 1.1, 3.6, 1.1, 2.7, G + 3.6, -6.2);      // chimney
+
+  // Round-top door
+  b.box(WOOD_DARK, 1.6, 2.2, 0.16, 0, G, Zf + 0.04);
+  b.cylZ(WOOD_DARK, 1.6, 0.16, 0, G + 2.2, Zf + 0.04);
+  b.ball(0xf2c94c, 0.16, 0.5, G + 1.2, Zf + 0.14);
+  b.box(0xcfc3ae, 2.6, 0.2, 1.1, 0, G, Zf + 0.55);         // door step
+
+  // Windows with shutters
+  [-2.9, 2.9].forEach((x) => {
+    frontWindow(b, x, G + 1.4, Zf, 1.4, 1.4, WHITE, GLASS);
+    b.box(0xc96f5a, 0.5, 1.8, 0.1, x - 1.25, G + 1.2, Zf + 0.04);
+    b.box(0xc96f5a, 0.5, 1.8, 0.1, x + 1.25, G + 1.2, Zf + 0.04);
+  });
+  sideWindow(b, 1, -4.5, G + 1.4, 4.5, 1.4, 1.4, WHITE, GLASS);
+  sideWindow(b, -1, -4.5, G + 1.4, -4.5, 1.4, 1.4, WHITE, GLASS);
+
+  // Garden
+  b.box(PATH_COLOR, 1.8, 0.06, 10.4, 0, G, 5.8);
+  gardenFence(b, WHITE);
+  flowerBed(b, -5, 6, 3.6, 2.2);
+  flowerBed(b, 5, 6, 3.6, 2.2);
+  bush(b, -4.9, 0.5);
+  bush(b, 4.9, 0.5);
+  return b.build();
+}
+
+// ---------- STYLE 2: TREEHOUSE ----------
+function buildTreehouse() {
+  const b = makeBuilder();
+  const Zf = -2.2; // the cabin's front wall
+
+  b.cyl(0x7d5232, 3.4, 0.7, 0, G, -4.5);          // flared trunk base
+  b.cyl(WOOD_DARK, 2.4, 5.3, 0, G, -4.5);         // trunk
+  b.cyl(0xc99560, 8, 0.35, 0, G + 5.1, -4.5);     // round platform
+  b.box(0xd9a566, 4.6, 3.2, 4.6, 0, G + 5.45, -4.5); // cabin
+  b.cone(0xe0a64a, 6.8, 2.8, 0, G + 8.65, -4.5);  // round thatched roof
+
+  // Door and round window
+  b.box(WOOD_DARK, 1.1, 2.0, 0.14, -0.8, G + 5.45, Zf + 0.03);
+  b.cylZ(WOOD_DARK, 1.1, 0.14, -0.8, G + 7.45, Zf + 0.03);
+  b.cylZ(WHITE, 1.3, 0.14, 1.0, G + 6.9, Zf + 0.04);
+  b.cylZ(GLASS, 1.0, 0.18, 1.0, G + 6.9, Zf + 0.04);
+
+  // Leafy crown around the cabin (not in front, so the door stays visible)
+  const leafColors = [0x6dbb5a, 0x58a84d, 0x7fc968];
+  [0, 180, 215, 250, 290, 325].forEach((deg, i) => {
+    const a = (deg * Math.PI) / 180;
+    b.ball(leafColors[i % 3], 4.4, Math.cos(a) * 4.3, G + 7.2 + (i % 2) * 0.8, -4.5 + Math.sin(a) * 4.3, 0.85);
+  });
+  b.ball(0x58a84d, 4.5, 0, G + 10.2, -6.2, 0.85);
+
+  // Ladder up to the platform
+  b.box(0xa8764a, 0.14, 5.4, 0.14, -0.5, G, -0.35);
+  b.box(0xa8764a, 0.14, 5.4, 0.14, 0.5, G, -0.35);
+  for (let i = 0; i < 7; i++) b.box(0xa8764a, 1.2, 0.1, 0.12, 0, G + 0.5 + i * 0.75, -0.35);
+
+  // Garden
+  b.box(PATH_COLOR, 1.8, 0.06, 11, 0, G, 5.3);
+  gardenFence(b, 0xb98a5a);
+  b.cyl(0xc99560, 1.0, 0.45, -3, G, 2.5);         // tree stump seats
+  b.cyl(0xc99560, 1.0, 0.45, 3, G, 3.2);
+  flowerBed(b, -5.5, 7, 3.4, 2.2);
+  flowerBed(b, 5.5, 7, 3.4, 2.2);
+  bush(b, -7, 0);
+  bush(b, 7, 0);
+  return b.build();
+}
+
+// ---------- STYLE 3: MODERN ----------
+function buildModern() {
+  const b = makeBuilder();
+  const DARK = 0x4a4440;
+  const ROOF = 0x6b625c;
+  const Zf = -0.5;   // lower front wall
+  const Zf2 = -2.0;  // upper floor front wall
+
+  b.box(0xf4efe6, 10, 3.2, 8, 0, G, -4.5);                  // lower floor
+  b.box(ROOF, 10.8, 0.35, 8.8, 0, G + 3.2, -4.5);           // flat roof
+  b.box(0xe9dfd0, 6, 3, 6.5, -1.8, G + 3.55, -5.25);        // upper floor
+  b.box(ROOF, 6.8, 0.35, 7.3, -1.8, G + 6.55, -5.25);       // upper flat roof
+
+  b.box(0xc58b52, 2.4, 3.2, 0.14, 3.4, G, Zf + 0.03);       // wood panel
+  frontWindow(b, -2.4, G + 0.6, Zf, 3.8, 2.2, DARK, 0x9fd7ee);   // big window
+  frontWindow(b, -1.8, G + 4.35, Zf2, 4.2, 1.4, DARK, 0x9fd7ee); // upper window band
+
+  // Door and entrance canopy
+  b.box(0x3f8f8a, 1.4, 2.4, 0.16, 0.8, G, Zf + 0.04);
+  b.box(0xf2c94c, 0.08, 0.7, 0.08, 1.2, G + 1.0, Zf + 0.15);
+  b.box(ROOF, 3.0, 0.2, 2.2, 0.8, G + 2.75, 0.5);
+  b.cyl(0xf4efe6, 0.22, 2.75, -0.5, G, 1.4);
+  b.cyl(0xf4efe6, 0.22, 2.75, 2.1, G, 1.4);
+  b.box(0xcfc3ae, 3.0, 0.14, 2.0, 0.8, G, 0.5);
+
+  // Round planters by the door
+  [[-1.4, 0.9], [3.0, 0.9]].forEach(([x, z]) => {
+    b.cyl(0xd7a77a, 0.8, 0.7, x, G, z);
+    b.ball(LEAF, 1.3, x, G + 1.35, z);
+  });
+
+  // Garden: stepping stones, hedges, pond, small tree
+  for (let i = 0; i < 5; i++) b.box(PATH_COLOR, 1.6, 0.08, 1.1, 0.8, G, 2.9 + i * 1.9);
+  const HEDGE = 0x70be5f;
+  b.box(HEDGE, 10.6, 1.0, 1.1, -5.7, G, 10.6);
+  b.box(HEDGE, 9.0, 1.0, 1.1, 6.5, G, 10.6);
+  b.box(HEDGE, 1.1, 1.0, 16.6, -10.6, G, 2.3);
+  b.box(HEDGE, 1.1, 1.0, 16.6, 10.6, G, 2.3);
+  b.ball(LEAF, 1.5, -0.4, G + 0.8, 10.6);
+  b.ball(LEAF, 1.5, 2.0, G + 0.8, 10.6);
+  b.cyl(0xd7cbb8, 5, 0.12, -6.5, G, 5.5);                   // pond rim
+  b.cyl(0x7fd3ee, 4.3, 0.16, -6.5, G, 5.5);                 // pond water
+  b.cyl(WOOD_DARK, 0.5, 2.2, 6.5, G, 5);                    // small tree
+  b.ball(0x6dbb5a, 3.0, 6.5, G + 3.3, 5);
+  return b.build();
+}
+
+// ---------- STYLE 4: TRADITIONAL (pitched roof, porch) ----------
+function buildTraditional() {
+  const b = makeBuilder();
+  const WALL = 0xe2a97c;
+  const ROOF = 0xb5523b;
+  const Zf = -0.5;
+  const W = 9;
+  const D = 8;
+  const wallH = 3.6;
+  const roofH = 3.2;
+
+  b.box(WALL, W, wallH, D, 0, G, -4.5);                     // walls
+  b.gable(WALL, W, roofH, D, 0, G + wallH, -4.5);           // triangle wall under the roof
+
+  // Roof: two tilted slabs meeting at the top
+  const slope = roofH / (W / 2);
+  const angle = Math.atan(slope);
+  const e = W / 2 + 0.8;                                    // roof overhang
+  const apexY = G + wallH + roofH;
+  const eaveY = G + wallH - 0.8 * slope;
+  const len = Math.hypot(e, apexY - eaveY) + 0.1;
+  const cy = (apexY + eaveY) / 2 + 0.18;
+  b.slab(ROOF, len, 0.4, D + 1.4, e / 2, cy, -4.5, 0, 0, -angle);
+  b.slab(ROOF, len, 0.4, D + 1.4, -e / 2, cy, -4.5, 0, 0, angle);
+  b.cylZ(0x8f3f2c, 0.55, D + 1.4, 0, apexY + 0.12, -4.5);   // roof ridge
+  b.box(0xb5654a, 1.2, 2.7, 1.2, -2.8, G + 4.2, -6.5);      // chimney
+
+  // Porch
+  b.box(0xc99560, 4.4, 0.25, 2.6, 0, G, 0.8);
+  b.cyl(WHITE, 0.38, 2.8, -1.8, G + 0.25, 1.8);
+  b.cyl(WHITE, 0.38, 2.8, 1.8, G + 0.25, 1.8);
+  b.box(ROOF, 4.9, 0.22, 3.2, 0, G + 3.05, 0.9);
+
+  // Door
+  b.box(0x8d3b32, 1.5, 2.5, 0.16, 0, G + 0.25, Zf + 0.04);
+  b.ball(0xf2c94c, 0.16, 0.5, G + 1.5, Zf + 0.14);
+
+  // Windows with flower boxes
+  [-3.2, 3.2].forEach((x) => {
+    frontWindow(b, x, G + 1.3, Zf, 1.3, 1.5, WHITE, GLASS);
+    b.box(WOOD_DARK, 1.8, 0.3, 0.45, x, G + 0.75, Zf + 0.3);
+    [-0.5, 0, 0.5].forEach((o, i) => b.dot(FLOWER_COLORS[i], 0.4, x + o, G + 1.15, Zf + 0.3));
+  });
+  b.cylZ(WHITE, 1.6, 0.16, 0, G + wallH + 1.05, Zf + 0.04); // round attic window
+  b.cylZ(GLASS, 1.25, 0.2, 0, G + wallH + 1.05, Zf + 0.04);
+  sideWindow(b, 1, -4.5, G + 1.4, 4.5, 1.4, 1.4, WHITE, GLASS);
+  sideWindow(b, -1, -4.5, G + 1.4, -4.5, 1.4, 1.4, WHITE, GLASS);
+
+  // Garden
+  b.box(PATH_COLOR, 1.8, 0.06, 9, 0, G, 6.6);
+  gardenFence(b, WHITE);
+  flowerBed(b, -5.5, 5.5, 3.6, 2.2);
+  flowerBed(b, 5.5, 5.5, 3.6, 2.2);
+  bush(b, -5.5, 0.6);
+  bush(b, 5.5, 0.6);
+  return b.build();
+}
+
+// ---------- Put the houses on their plots (one InstancedMesh per style) ----------
+const houseMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+const houseBuilders = {
+  cottage: buildCottage,
+  treehouse: buildTreehouse,
+  modern: buildModern,
+  traditional: buildTraditional
+};
+const houseMeshes = {}; // kept so later phases can update houses
+
+HOUSE_STYLES.forEach((style) => {
+  const list = PLOTS.filter((plot) => plot.house === style);
+  if (list.length === 0) return;
+
+  const mesh = new THREE.InstancedMesh(houseBuilders[style](), houseMaterial, list.length);
+  list.forEach((plot, i) => {
+    dummy.position.set(plot.x, 0, plot.z);
+    dummy.rotation.set(0, plot.facing, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  houseMeshes[style] = mesh;
+});
+
+// =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
 const EYE_HEIGHT = 1.7;      // how high your eyes are above the ground when walking
