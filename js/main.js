@@ -1328,27 +1328,14 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   b.cyl(0xc1121f, 1.4, 0.07, RX, SQUARE_TOP, RZ);
   b.cyl(0xffffff, 0.6, 0.08, RX, SQUARE_TOP, RZ);
 
-  
 // ---------- Put it in the world ----------
-
-// Sacred tree, garlands and flexible shrine decorations
-const sacredMaterial = new THREE.MeshLambertMaterial({
-  vertexColors: true
-});
-
-// Connect the sacred tree and decorations to the breeze system
-addFlexSway(sacredMaterial, 'sacred-square-wind', 0.65, 0.28, 0.12);
-
-const stoneMesh = new THREE.Mesh(b.build(), sacredMaterial);
+const stoneMesh = new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true }));
 stoneMesh.frustumCulled = false;
 scene.add(stoneMesh);
 
-// Diya and brass lamp flames
-// Flames flicker continuously and lean naturally during a breeze
-const flameMesh = new THREE.Mesh(f.build(), makeFlameMaterial());
+const flameMesh = new THREE.Mesh(f.build(), new THREE.MeshBasicMaterial({ vertexColors: true }));
 flameMesh.frustumCulled = false;
 scene.add(flameMesh);
-
 
 // =====================================================
 // 6c. ROADS AND BRIDGE (made from the plot grid, one merged shape)
