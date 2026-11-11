@@ -15,7 +15,27 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['ownerId', 'ownerName', 'house', 'price', 'boughtAt'])
         && request.resource.data.price == priceOf(request.resource.data.house)
         && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.plotId == plotId;
-      allow update, delete: if false;
+      // Only the owner can change who lives there (members), nothing else.
+      allow update: if request.auth != null
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'memberIds'])
+        && request.resource.data.get('memberIds', []).size() <= 6;
+      allow delete: if false;
+    }
+
+    // "Can I enter your house?" requests. Only the asker and the owner can see them.
+    match /requests/{reqId} {
+      allow read: if request.auth != null
+        && (resource.data.fromUid == request.auth.uid || resource.data.ownerId == request.auth.uid);
+      allow create: if request.auth != null
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.ownerId != request.auth.uid
+        && reqId == request.resource.data.plotId + '_' + request.auth.uid
+        && request.resource.data.keys().hasOnly(['plotId', 'ownerId', 'fromUid', 'fromName', 'createdAt'])
+        && get(/databases/$(database)/documents/plots/$(request.resource.data.plotId)).data.ownerId == request.resource.data.ownerId;
+      allow delete: if request.auth != null
+        && (resource.data.fromUid == request.auth.uid || resource.data.ownerId == request.auth.uid);
+      allow update: if false;
     }
 
     // Each player's wallet. Only that player can see it.
