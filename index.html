@@ -1,3 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>FREE LIFE</title>
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- This tells the browser where to find Three.js (loaded from a CDN) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+
   <!-- The 3D world is drawn here -->
   <canvas id="game"></canvas>
 
@@ -16,8 +35,7 @@
     <button id="startBtn">Enter the World</button>
     <p class="help">
       Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
-      Press F to fly. Space = up, Ctrl or C = down. Press F again to land.<br>
-      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly.
+      Phone: left circle to walk, drag anywhere else to look.
     </p>
   </div>
 
@@ -25,16 +43,10 @@
   <div id="hud" class="hidden">
     <div id="hudTitle">FREE LIFE</div>
     <div id="hudHint"></div>
-    <div id="hudAlt">Altitude: 0 m</div>
   </div>
 
   <!-- Touch joystick (only shown on phones and tablets) -->
   <div id="joystick" class="hidden"><div id="stick"></div></div>
-
-  <!-- Touch fly buttons (only shown on phones and tablets) -->
-  <button id="downBtn" class="flyCtl hidden">&#9660;</button>
-  <button id="upBtn" class="flyCtl hidden">&#9650;</button>
-  <button id="flyBtn" class="hidden">Fly</button>
 
   <script type="module" src="js/main.js"
     onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
