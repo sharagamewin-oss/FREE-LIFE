@@ -35,7 +35,8 @@
     <button id="startBtn">Enter the World</button>
     <p class="help">
       Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
-      Phone: left circle to walk, drag anywhere else to look.
+      Fly: press F. Space goes up, Ctrl or C goes down. Press F again to land.<br>
+      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly.
     </p>
   </div>
 
@@ -43,10 +44,18 @@
   <div id="hud" class="hidden">
     <div id="hudTitle">FREE LIFE</div>
     <div id="hudHint"></div>
+    <div id="hudAltitude">Altitude: 0 m</div>
   </div>
 
   <!-- Touch joystick (only shown on phones and tablets) -->
   <div id="joystick" class="hidden"><div id="stick"></div></div>
+
+  <!-- Fly buttons (only shown on phones and tablets) -->
+  <div id="flyButtons" class="hidden">
+    <button id="upBtn" class="flyBtn small hidden">&#9650;</button>
+    <button id="downBtn" class="flyBtn small hidden">&#9660;</button>
+    <button id="flyBtn" class="flyBtn">Fly</button>
+  </div>
 
   <script type="module" src="js/main.js"
     onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
