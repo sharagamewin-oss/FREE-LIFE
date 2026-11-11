@@ -518,6 +518,8 @@ function makeBuilder() {
     dot(color, dia, x, y, z) { add(U_DOT, color, x, y, z, dia, dia, dia); },
     cylZ(color, dia, len, x, y, z) { add(U_CYL, color, x, y, z, dia, len, dia, Math.PI / 2, 0, 0); },
     slab(color, w, h, d, x, y, z, rx, ry, rz) { add(U_BOX, color, x, y, z, w, h, d, rx, ry, rz); },
+    ellip(color, sx, sy, sz, x, y, z, rx = 0, ry = 0, rz = 0) { add(U_BALL, color, x, y, z, sx, sy, sz, rx, ry, rz); },
+    cylRot(color, dia, len, x, y, z, rx, ry, rz) { add(U_CYL, color, x, y, z, dia, len, dia, rx, ry, rz); },
 
     build() {
       const g = new THREE.BufferGeometry();
@@ -870,6 +872,328 @@ function updateHouseLOD() {
     chunk.lite.forEach((m) => { m.visible = showLite; });
   });
 }
+
+// =====================================================
+// 6b2. THE SACRED PEEPAL TREE AND THE GANESHA SHRINE (in the middle of the town square)
+// =====================================================
+const SQUARE_TOP = 0.3;                 // height of the plaza floor
+const PLATFORM_R1 = 5.0;                // the stone platform (chabutara) around the tree
+const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tree (facing the south road)
+
+(function buildSacredSquare() {
+  const wasLite = liteMode;
+  liteMode = false;                      // always build every small detail
+  const rng = makeRng(4242);
+  const b = makeBuilder();               // stone, wood, leaves, flowers
+  const f = makeBuilder();               // flames (drawn bright, never dark)
+
+  // A thin part pointing from one point to another (branches, arms, roots).
+  const upAxis = new THREE.Vector3(0, 1, 0);
+  const dirVec = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const euler = new THREE.Euler();
+  function limb(color, dia, x1, y1, z1, x2, y2, z2) {
+    dirVec.set(x2 - x1, y2 - y1, z2 - z1);
+    const len = dirVec.length();
+    dirVec.normalize();
+    quat.setFromUnitVectors(upAxis, dirVec);
+    euler.setFromQuaternion(quat, 'XYZ');
+    b.cylRot(color, dia, len, (x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2, euler.x, euler.y, euler.z);
+  }
+
+  const GOLD = 0xe0a82e;
+  const MARIGOLD = [0xff9f1c, 0xffc300, 0xff7a00, 0xffd93b];
+  const WOOD = 0x7c6d5e;
+  const WOOD_DK = 0x6a5c4e;
+
+  // ---------- Stone platform (chabutara) ----------
+  b.cyl(0xcdb892, PLATFORM_R1 * 2, 0.55, 0, SQUARE_TOP, 0);                 // lower tier
+  b.cyl(0xb8402c, PLATFORM_R1 * 2 + 0.08, 0.14, 0, SQUARE_TOP + 0.2, 0);    // red painted band
+  b.cyl(0xf3ead2, 8.4, 0.4, 0, SQUARE_TOP + 0.55, 0);                       // upper tier
+  const TOP2 = SQUARE_TOP + 0.95;                                           // top of the platform
+
+  // ---------- The big Peepal (sacred fig / Bodhi) tree ----------
+  b.cyl(WOOD_DK, 4.6, 1.2, 0, TOP2, 0);                  // wide root base
+  b.cyl(WOOD, 3.0, 9.2, 0, TOP2 + 1.1, 0);               // thick trunk
+
+  // Roots spreading over the platform
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + rng() * 0.3;
+    limb(WOOD_DK, 0.9, Math.cos(a) * 1.0, TOP2 + 2.3, Math.sin(a) * 1.0, Math.cos(a) * 3.3, TOP2, Math.sin(a) * 3.3);
+  }
+
+  // Sacred threads and a saffron cloth tied around the trunk
+  b.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.0, 0);
+  b.cyl(0xffc107, 3.12, 0.1, 0, TOP2 + 2.25, 0);
+  b.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.5, 0);
+  b.cyl(0xff8f00, 3.2, 0.55, 0, TOP2 + 3.3, 0);
+
+  // Big spreading branches and the leafy crown
+  const greens = [0x4f9b3a, 0x5fae3f, 0x6dbb48, 0x7ec850, 0x429134];
+  const crown = (x, y, z, dia, squash) => b.ball(greens[Math.floor(rng() * greens.length)], dia, x, y, z, squash);
+
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + rng() * 0.4;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const midY = TOP2 + 12 + rng() * 1.5;
+    const endY = TOP2 + 14.2 + rng() * 2;
+    limb(WOOD, 1.3, ca * 0.6, TOP2 + 9.0 + rng() * 1.2, sa * 0.6, ca * 5.5, midY, sa * 5.5);
+    limb(WOOD, 0.8, ca * 5.5, midY, sa * 5.5, ca * 10.5, endY, sa * 10.5);
+    for (let k = 0; k < 5; k++) {
+      crown(ca * 10.5 + (rng() - 0.5) * 7, endY + (rng() - 0.3) * 4, sa * 10.5 + (rng() - 0.5) * 7, 7 + rng() * 3, 0.7);
+    }
+  }
+  for (let i = 0; i < 30; i++) {            // the top dome
+    const r = Math.sqrt(rng()) * 9;
+    const a = rng() * Math.PI * 2;
+    crown(Math.cos(a) * r, TOP2 + 14 + (1 - r / 9) * 5 + rng() * 2, Math.sin(a) * r, 7 + rng() * 4, 0.7);
+  }
+  for (let i = 0; i < 24; i++) {            // lower, drooping edge
+    const r = 8 + rng() * 7;
+    const a = rng() * Math.PI * 2;
+    crown(Math.cos(a) * r, TOP2 + 10.5 + rng() * 3.5, Math.sin(a) * r, 5.5 + rng() * 3, 0.7);
+  }
+  for (let i = 0; i < 18; i++) {            // fresh light-green leaves on top
+    const r = Math.sqrt(rng()) * 11;
+    const a = rng() * Math.PI * 2;
+    b.ball(0x9bd65c, 3 + rng() * 1.5, Math.cos(a) * r, TOP2 + 17.5 + (1 - r / 11) * 4.5 + rng() * 1.5, Math.sin(a) * r, 0.7);
+  }
+
+  // ---------- Garland and lamps on the platform ----------
+  for (let i = 0; i < 44; i++) {            // marigold garland around the upper tier
+    const a = (i / 44) * Math.PI * 2;
+    b.dot(MARIGOLD[i % 4], 0.34, Math.cos(a) * 4.05, TOP2 + 0.14, Math.sin(a) * 4.05);
+  }
+  for (let i = 0; i < 14; i++) {            // clay lamps (diyas) around the lower tier
+    const a = (i / 14) * Math.PI * 2 + 0.2;
+    const x = Math.cos(a) * 4.6;
+    const z = Math.sin(a) * 4.6;
+    b.cyl(0xb5522b, 0.34, 0.1, x, SQUARE_TOP + 0.55, z);
+    f.cone(0xffd24a, 0.14, 0.3, x, SQUARE_TOP + 0.66, z);
+  }
+  [60, 90, 120].forEach((deg) => {          // three serpent stones painted with sindoor
+    const a = (deg * Math.PI) / 180;
+    const x = Math.cos(a) * 3.2;
+    const z = Math.sin(a) * 3.2;
+    const face = Math.PI / 2 - a;
+    b.ellip(0x8e8a82, 0.8, 1.3, 0.4, x, TOP2 + 0.65, z, 0, face, 0);
+    b.ellip(0x8e8a82, 0.62, 0.5, 0.36, x, TOP2 + 1.4, z, 0, face, 0);
+    b.dot(0xff6a00, 0.3, x + Math.cos(a) * 0.2, TOP2 + 1.0, z + Math.sin(a) * 0.2);
+    b.dot(MARIGOLD[deg % 4], 0.28, x + Math.cos(a) * 0.5, TOP2 + 0.14, z + Math.sin(a) * 0.5);
+  });
+
+  // ---------- The Ganesha shrine ----------
+  const sx = SHRINE.x;
+  const sz = SHRINE.z;
+  const SL = SQUARE_TOP + 0.45;             // top of the shrine's stone floor
+  const PH = 4.9;                           // pillar height
+
+  b.box(0xd9c7a1, 6.2, 0.45, 5.0, sx, SQUARE_TOP, sz);          // stone floor
+  b.box(0xb8402c, 6.3, 0.12, 5.1, sx, SQUARE_TOP + 0.18, sz);   // red band
+  b.box(0xf6e8c8, 5.8, PH, 0.35, sx, SL, sz - 2.15);            // back wall
+  [-1, 1].forEach((sd) => {                                      // four pillars
+    [sz - 2.1, sz + 2.1].forEach((pz) => {
+      b.cyl(0xf0dfc0, 0.4, PH, sx + sd * 2.8, SL, pz);
+      b.cyl(0xb8402c, 0.58, 0.28, sx + sd * 2.8, SL, pz);
+      b.box(GOLD, 0.72, 0.18, 0.72, sx + sd * 2.8, SL + PH - 0.18, pz);
+    });
+  });
+  b.box(0xb3472b, 6.8, 0.3, 5.6, sx, SL + PH, sz);                // roof slab
+  b.pyramid(0xc65a35, 6.2, 1.7, 5.0, sx, SL + PH + 0.3, sz);      // roof
+  b.cyl(GOLD, 0.45, 0.35, sx, SL + PH + 1.95, sz);                // golden kalasha on top
+  b.ball(GOLD, 0.7, sx, SL + PH + 2.5, sz);
+  b.cone(GOLD, 0.2, 0.45, sx, SL + PH + 2.8, sz);
+
+  // The seat for the idol
+  const IZ = sz - 0.7;                                           // idol's centre (front-back)
+  b.box(0xe9dcc0, 3.0, 1.0, 2.2, sx, SL, IZ);
+  b.box(0xb8402c, 3.1, 0.12, 2.3, sx, SL + 0.45, IZ);
+  b.box(0xf3ead2, 3.2, 0.15, 2.4, sx, SL + 1.0, IZ);
+  const IY = SL + 1.15;                                          // top of the seat
+  b.cyl(0xf28aa8, 2.6, 0.2, sx, IY, IZ);                         // lotus seat
+  b.cyl(0xffe3ee, 2.0, 0.15, sx, IY + 0.2, IZ);
+
+  // Halo behind the idol
+  const y0 = IY + 0.35;                                          // bottom of the idol
+  const K = 0.75;                                                // idol size
+  b.cylZ(GOLD, 3.1, 0.08, sx, y0 + 2.0 * K + 0.25, sz - 1.95);
+  b.cylZ(0x9c2a1c, 2.7, 0.08, sx, y0 + 2.0 * K + 0.25, sz - 1.9);
+
+  // ---- Lord Ganesha, seated ----
+  const ORANGE = 0xe2672b;
+  const ORANGE_DK = 0xc9531a;
+  const X = (v) => sx + v * K;
+  const Y = (v) => y0 + v * K;
+  const Z = (v) => IZ + v * K;
+
+  b.ball(ORANGE, 1.8 * K, X(0), Y(1.0), Z(0.15), 1.0);                    // belly
+  b.ball(ORANGE, 1.5 * K, X(0), Y(1.25), Z(-0.25), 1.0);                  // back
+  b.ball(ORANGE, 1.35 * K, X(0), Y(1.7), Z(0), 1.0);                      // chest
+  b.cyl(GOLD, 1.95 * K, 0.1 * K, X(0), Y(0.82), Z(0.15));                 // golden belt
+  [-1, 1].forEach((sd) => {
+    b.ellip(ORANGE_DK, 1.2 * K, 0.55 * K, 1.0 * K, X(sd * 0.65), Y(0.3), Z(0.4));   // crossed legs
+    b.ball(0xf1b08a, 0.38 * K, X(sd * 0.35), Y(0.35), Z(0.95));                     // feet
+    b.ellip(ORANGE_DK, 0.22 * K, 1.35 * K, 1.1 * K, X(sd * 0.9), Y(2.5), Z(0.0));   // big ears
+    b.dot(0x2b1b12, 0.12 * K, X(sd * 0.25), Y(2.62), Z(0.62));                      // eyes
+    b.dot(0xfff6e0, 0.16 * K, X(sd * 0.25), Y(2.62), Z(0.58));
+  });
+  b.ball(ORANGE, 1.2 * K, X(0), Y(2.5), Z(0.1), 1.0);                     // head
+  [[0, 2.3, 0.65, 0.5], [0.02, 2.0, 0.8, 0.46], [0.05, 1.7, 0.85, 0.42],  // trunk, curling to one side
+   [0.15, 1.45, 0.8, 0.38], [0.3, 1.35, 0.7, 0.34]].forEach(([tx, ty, tz, td]) => {
+    b.ball(ORANGE, td * K, X(tx), Y(ty), Z(tz), 1.0);
+  });
+  b.ellip(0xfff6e0, 0.15 * K, 0.15 * K, 0.5 * K, X(-0.28), Y(2.15), Z(0.6));      // tusk
+  b.cone(GOLD, 0.95 * K, 0.7 * K, X(0), Y(2.95), Z(0.1));                         // golden crown
+  b.cyl(0xd62828, 1.0 * K, 0.12 * K, X(0), Y(2.95), Z(0.1));
+  b.ball(0xd62828, 0.2 * K, X(0), Y(3.65), Z(0.1));
+  b.dot(0xffc107, 0.2 * K, X(0), Y(2.88), Z(0.68));                               // golden forehead mark
+
+  // Four arms
+  limb(ORANGE, 0.28 * K, X(0.6), Y(1.95), Z(0.05), X(1.15), Y(2.35), Z(0.25));    // upper right: goad
+  b.ball(ORANGE, 0.34 * K, X(1.15), Y(2.35), Z(0.25));
+  b.cyl(GOLD, 0.07 * K, 0.9 * K, X(1.15), Y(2.0), Z(0.25));
+  b.cone(0xe8e8e8, 0.25 * K, 0.3 * K, X(1.15), Y(2.9), Z(0.25));
+  limb(ORANGE, 0.28 * K, X(-0.6), Y(1.95), Z(0.05), X(-1.15), Y(2.35), Z(0.25));  // upper left: noose
+  b.ball(ORANGE, 0.34 * K, X(-1.15), Y(2.35), Z(0.25));
+  b.ball(0xd62828, 0.32 * K, X(-1.15), Y(2.7), Z(0.25));
+  limb(ORANGE, 0.28 * K, X(0.65), Y(1.4), Z(0.2), X(1.2), Y(1.55), Z(0.75));      // lower right: blessing
+  b.ball(ORANGE, 0.4 * K, X(1.2), Y(1.55), Z(0.75));
+  limb(ORANGE, 0.28 * K, X(-0.65), Y(1.4), Z(0.2), X(-0.95), Y(1.25), Z(0.75));   // lower left: sweet modak
+  b.ball(ORANGE, 0.36 * K, X(-0.95), Y(1.25), Z(0.75));
+  b.ball(0xf4c542, 0.34 * K, X(-0.95), Y(1.5), Z(0.78), 0.9);
+
+  // Marigold garland on his chest
+  for (let i = 0; i <= 14; i++) {
+    const a = -1.2 + (2.4 * i) / 14;
+    b.dot(MARIGOLD[i % 4], 0.3 * K, X(0.8 * Math.sin(a)), Y(1.95 - 0.55 * Math.cos(a)), Z(0.5 + 0.6 * Math.cos(a)));
+  }
+
+  // His friend the little mouse
+  const mx = sx - 1.9;
+  const mz = sz + 0.9;
+  b.ellip(0x8d8680, 0.55, 0.42, 0.8, mx, SL + 0.25, mz);
+  b.ball(0x8d8680, 0.3, mx, SL + 0.28, mz + 0.45);
+  b.dot(0xf2a6b5, 0.1, mx - 0.1, SL + 0.4, mz + 0.5);
+  b.dot(0xf2a6b5, 0.1, mx + 0.1, SL + 0.4, mz + 0.5);
+  b.dot(0x2b1b12, 0.06, mx, SL + 0.3, mz + 0.6);
+  limb(0xf2a6b5, 0.05, mx, SL + 0.2, mz - 0.4, mx - 0.3, SL + 0.08, mz - 0.9);
+
+  // Marigold garland hanging between the front pillars, and a temple bell
+  for (let i = 0; i <= 16; i++) {
+    const t = i / 16;
+    b.dot(MARIGOLD[i % 4], 0.3, sx - 2.8 + 5.6 * t, SL + PH - 0.2 - 0.7 * Math.sin(Math.PI * t), sz + 2.1);
+  }
+  b.cyl(0x5a3a22, 0.05, 0.7, sx, SL + PH - 0.7, sz + 2.1);
+  b.cone(GOLD, 0.7, 0.55, sx, SL + PH - 1.25, sz + 2.1);
+  b.ball(0x8a6a1a, 0.18, sx, SL + PH - 1.28, sz + 2.1);
+  for (let i = 0; i <= 12; i++) {                                   // garland on the front of the seat
+    b.dot(MARIGOLD[i % 4], 0.3, sx - 1.5 + (3 * i) / 12, SL + 1.1, IZ + 1.25);
+  }
+
+  // ---------- Offerings ----------
+  // Brass plate with sweet modaks, red hibiscus and durva grass
+  b.cyl(0xd4a017, 1.5, 0.06, 0, SL, 10.6);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    b.ball(0xf4c542, 0.34, Math.cos(a) * 0.4, SL + 0.2, 10.6 + Math.sin(a) * 0.4, 0.9);
+    b.dot(0xd62828, 0.22, Math.cos(a) * 0.65, SL + 0.1, 10.6 + Math.sin(a) * 0.65);
+  }
+  b.ball(0xf4c542, 0.34, 0, SL + 0.38, 10.6, 0.9);
+  for (let i = 0; i < 6; i++) {
+    b.cylRot(0x3f9a3a, 0.04, 0.5, 0.5 + i * 0.03, SL + 0.3, 10.2 + i * 0.03, 0.2, 0, -0.3 + i * 0.12);
+  }
+
+  // Bananas on a banana leaf
+  b.ellip(0x3f9a3a, 1.2, 0.05, 0.8, -1.7, SL + 0.03, 10.6);
+  for (let i = 0; i < 6; i++) {
+    b.cylRot(0xf2d544, 0.17, 0.65, -1.7 + (i - 2.5) * 0.14, SL + 0.38, 10.6, 0, 0, (i - 2.5) * 0.12);
+  }
+  b.cyl(0x3f7a2a, 0.1, 0.15, -1.7, SL + 0.7, 10.6);
+
+  // Coconuts
+  [[-0.95, 10.95], [-0.62, 10.8], [1.15, 10.95]].forEach(([cx, cz]) => {
+    b.ball(0x6b4a2b, 0.5, cx, SL + 0.25, cz);
+    b.dot(0x4a3320, 0.14, cx, SL + 0.48, cz);
+  });
+
+  // Kumkum and turmeric bowls
+  [[-0.35, 11.25, 0xc1121f], [0.35, 11.25, 0xf2b705]].forEach(([cx, cz, col]) => {
+    b.cyl(GOLD, 0.5, 0.12, cx, SL, cz);
+    b.cone(col, 0.38, 0.2, cx, SL + 0.12, cz);
+  });
+
+  // Clay lamps in a row, and two tall brass lamps
+  for (let i = 0; i < 4; i++) {
+    [-1, 1].forEach((sd) => {
+      const lx = sd * (0.95 + i * 0.45);
+      b.cyl(0xb5522b, 0.38, 0.12, lx, SL, 11.2);
+      f.cone(0xffd24a, 0.16, 0.34, lx, SL + 0.12, 11.2);
+    });
+  }
+  [-1, 1].forEach((sd) => {
+    const lx = sd * 2.4;
+    b.cyl(GOLD, 0.45, 0.08, lx, SL, 11.0);
+    b.cyl(GOLD, 0.12, 0.8, lx, SL + 0.08, 11.0);
+    b.cyl(GOLD, 0.5, 0.1, lx, SL + 0.88, 11.0);
+    f.cone(0xffd24a, 0.2, 0.42, lx, SL + 0.98, 11.0);
+  });
+
+  // Incense sticks
+  b.cyl(0xc79a2b, 0.3, 0.25, 1.9, SL, 10.3);
+  for (let i = 0; i < 5; i++) {
+    const tilt = (i - 2) * 0.12;
+    b.cylRot(0x5a3a22, 0.03, 0.8, 1.9 + tilt * 0.4, SL + 0.62, 10.3, 0, 0, -tilt);
+    b.dot(0xff3b1f, 0.06, 1.9 + tilt * 0.85, SL + 1.02, 10.3);
+  }
+
+  // Copper water pot (kalash) with mango leaves and a coconut
+  b.ball(0xb87333, 0.75, 2.3, SL + 0.4, 9.95);
+  b.cyl(0xb87333, 0.35, 0.2, 2.3, SL + 0.72, 9.95);
+  b.cyl(0xb87333, 0.5, 0.06, 2.3, SL + 0.9, 9.95);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    b.ellip(0x3f9a3a, 0.12, 0.5, 0.2, 2.3 + Math.cos(a) * 0.22, SL + 1.15, 9.95 + Math.sin(a) * 0.22, Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+  }
+  b.ball(0x6b4a2b, 0.38, 2.3, SL + 1.2, 9.95);
+  b.cyl(0xc62828, 0.4, 0.1, 2.3, SL + 0.95, 9.95);
+
+  // Heap of marigold flowers, and scattered petals
+  for (let i = 0; i < 26; i++) {
+    const a = rng() * Math.PI * 2;
+    const r = Math.sqrt(rng()) * 0.5;
+    b.dot(MARIGOLD[i % 4], 0.26, -2.35 + Math.cos(a) * r, SL + 0.12 + (1 - r / 0.5) * 0.25, 10.8 + Math.sin(a) * r);
+  }
+  const petals = [0xff9f1c, 0xffc300, 0xf48fb1, 0xffffff, 0xd62828];
+  for (let i = 0; i < 40; i++) {
+    b.dot(petals[i % 5], 0.2, sx + (rng() - 0.5) * 5.2, SL + 0.05, 9.9 + rng() * 1.6);
+  }
+  for (let i = 0; i < 40; i++) {                                    // petals on the plaza floor in front
+    b.dot(petals[i % 5], 0.18, sx + (rng() - 0.5) * 6, SQUARE_TOP + 0.04, sz + 3.0 + rng() * 1.6);
+  }
+
+  // Rangoli (coloured floor art) in front of the shrine
+  const RX = sx;
+  const RZ = sz + 6.2;
+  b.cyl(0xf3e9d0, 5.0, 0.02, RX, SQUARE_TOP, RZ);
+  b.cyl(0xc1121f, 4.2, 0.03, RX, SQUARE_TOP, RZ);
+  b.cyl(0xffffff, 3.6, 0.04, RX, SQUARE_TOP, RZ);
+  b.cyl(0xff8f00, 3.0, 0.05, RX, SQUARE_TOP, RZ);
+  b.cyl(0xffd93b, 2.2, 0.06, RX, SQUARE_TOP, RZ);
+  b.cyl(0xc1121f, 1.4, 0.07, RX, SQUARE_TOP, RZ);
+  b.cyl(0xffffff, 0.6, 0.08, RX, SQUARE_TOP, RZ);
+
+  // ---------- Put it in the world ----------
+  const stoneMesh = new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true }));
+  stoneMesh.frustumCulled = false;
+  scene.add(stoneMesh);
+
+  const flameMesh = new THREE.Mesh(f.build(), new THREE.MeshBasicMaterial({ vertexColors: true }));
+  flameMesh.frustumCulled = false;
+  scene.add(flameMesh);
+
+  liteMode = wasLite;
+})();
 
 // =====================================================
 // 6c. ROADS AND BRIDGE (made from the plot grid, one merged shape)
@@ -1731,6 +2055,14 @@ function blockedBySolid(x, z, altitude) {
         if (t && Math.hypot(x - t.x, z - t.z) < t.r + GARDEN_PAD) return true;
       }
     }
+  }
+
+  // The tree platform and the shrine in the middle of the town square
+  if (Math.abs(x) < 20 && Math.abs(z) < 20) {
+    if (altitude < 1.6 && Math.hypot(x, z) < PLATFORM_R1 + GARDEN_PAD) return true;
+    if (altitude < 6.5 &&
+        Math.abs(x - SHRINE.x) < 3.4 + GARDEN_PAD &&
+        Math.abs(z - SHRINE.z) < 2.8 + GARDEN_PAD) return true;
   }
 
   // Only the house in that plot is checked.
