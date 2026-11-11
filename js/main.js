@@ -1971,6 +1971,7 @@ function exitHouse() {
 
 // Pressing E (or the door button) does whatever the door button says.
 function useDoor() {
+  if (agreementOpen) return;   // the house paper is open
   if (doorAction === 'enter' && doorPlot) enterHouse(doorPlot);
   else if (doorAction === 'exit' && inside) exitHouse();
 }
@@ -1980,25 +1981,53 @@ doorBtn.addEventListener('click', () => {
 });
 
 // =====================================================
-// 8c. FIREBASE (sign in, owners, claiming a house)
+// 8c. FIREBASE (sign in, game money, buying a house)
 // =====================================================
 // Loaded on its own, so if Firebase is not set up yet the game still works.
 const authBtn = document.getElementById('authBtn');
 const authName = document.getElementById('authName');
+const coinText = document.getElementById('coinText');
 const claimBtn = document.getElementById('claimBtn');
+const agreement = document.getElementById('agreement');
+const paperBody = document.getElementById('paperBody');
+const paperMsg = document.getElementById('paperMsg');
+const paperYes = document.getElementById('paperYes');
+const paperNo = document.getElementById('paperNo');
+
 let fb = null;            // the Firebase helpers, once loaded
 let currentUser = null;   // the signed-in person, or null
-let hasPlot = false;      // did this person already claim a plot?
+let coins = null;         // the player's game coins (null = not known yet)
+let stopWallet = null;    // stops listening to the wallet when signing out
+let agreementOpen = false;
+let pendingPlot = null;   // the house being bought in the open paper
+
+function updateCoinText() {
+  const show = !!currentUser;
+  coinText.classList.toggle('hidden', !show);
+  coinText.textContent = typeof coins === 'number' ? `Coins: ${coins}` : 'Coins: ...';
+}
 
 import('./firebase.js').then((mod) => {
   fb = mod;
   authBtn.classList.remove('hidden');
 
-  fb.onUserChange((user) => {
+  fb.onUserChange(async (user) => {
     currentUser = user;
+    coins = null;
+    if (stopWallet) { stopWallet(); stopWallet = null; }
+
     authBtn.textContent = user ? 'Sign out' : 'Sign in with Google';
     authName.textContent = user ? user.displayName || 'Player' : '';
     authName.classList.toggle('hidden', !user);
+    updateCoinText();
+
+    if (user) {
+      try { await fb.ensureWallet(user); } catch (err) { console.warn('Wallet error:', err); }
+      stopWallet = fb.watchWallet(user.uid, (data) => {
+        coins = data.coins;
+        updateCoinText();
+      });
+    }
   });
 
   // Every time owners change in Firebase, copy them into the PLOTS list.
@@ -2007,8 +2036,9 @@ import('./firebase.js').then((mod) => {
       const o = owners[plot.id];
       plot.ownerId = o ? o.ownerId : null;
       plot.ownerName = o ? o.ownerName : null;
+      plot.price = o ? o.price : null;
+      plot.boughtAt = o ? o.boughtAt : null;
     });
-    hasPlot = !!currentUser && PLOTS.some((p) => p.ownerId === currentUser.uid);
   });
 }).catch((err) => console.warn('Firebase is not ready yet:', err));
 
@@ -2018,43 +2048,135 @@ authBtn.addEventListener('click', () => {
   else fb.signIn().catch((err) => console.warn('Sign in failed:', err));
 });
 
-claimBtn.addEventListener('click', async () => {
-  const plot = claimPlotTarget;
-  if (!fb || !plot) return;
-  if (!currentUser) {
-    fb.signIn().catch((err) => console.warn('Sign in failed:', err));
-    return;
+// ---------- The house agreement paper ----------
+function paperRow(label, value) {
+  const row = document.createElement('div');
+  row.className = 'paperRow';
+  const a = document.createElement('span');
+  a.textContent = label;
+  const b = document.createElement('b');
+  b.textContent = value;
+  row.append(a, b);
+  paperBody.appendChild(row);
+}
+
+function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
+  agreementOpen = true;
+  keys.clear();
+  vel.x = 0;
+  vel.z = 0;
+
+  const style = plot.house.charAt(0).toUpperCase() + plot.house.slice(1);
+  const buying = mode === 'buy';
+  const price = buying ? fb.PRICES[plot.house] : plot.price;
+  const date = (!buying && plot.boughtAt ? new Date(plot.boughtAt) : new Date()).toLocaleDateString();
+
+  paperBody.textContent = '';
+  paperRow('House number', plot.id.replace('plot_', ''));
+  paperRow('House style', style);
+  paperRow('Price', price != null ? `${price} coins` : '-');
+  paperRow(buying ? 'Buyer' : 'Owner', buying ? (currentUser.displayName || 'Player') : (plot.ownerName || 'A player'));
+  paperRow('Date', date);
+  if (buying) {
+    paperRow('Your coins now', typeof coins === 'number' ? String(coins) : '...');
+    paperRow('Coins after buying', typeof coins === 'number' ? String(coins - price) : '...');
   }
+
+  pendingPlot = buying ? plot : null;
+  paperMsg.textContent = '';
+  paperYes.classList.toggle('hidden', !buying);
+  paperYes.disabled = false;
+  paperNo.textContent = buying ? 'Cancel' : 'Close';
+
+  if (buying && (typeof coins !== 'number' || coins < price)) {
+    paperYes.disabled = true;
+    paperMsg.textContent = 'You do not have enough coins for this house.';
+  }
+  agreement.classList.remove('hidden');
+}
+
+function closeAgreement() {
+  agreementOpen = false;
+  pendingPlot = null;
+  agreement.classList.add('hidden');
+}
+
+paperNo.addEventListener('click', closeAgreement);
+window.addEventListener('keydown', (e) => {
+  if (agreementOpen && e.code === 'Escape') closeAgreement();
+});
+
+paperYes.addEventListener('click', async () => {
+  if (!fb || !pendingPlot) return;
+  paperYes.disabled = true;
+  paperMsg.style.color = '#4a2f1b';
+  paperMsg.textContent = 'Signing the paper...';
   try {
-    await fb.claimPlot(plot.id);
+    await fb.buyPlot(pendingPlot.id, pendingPlot.house);
+    closeAgreement();
+    hudHint.textContent = 'Congratulations! This house is now yours.';
   } catch (err) {
-    console.warn('Could not claim:', err);
-    hudHint.textContent = 'Could not claim this house. Someone may have just taken it, or you already own one.';
+    console.warn('Could not buy:', err);
+    const messages = {
+      'taken': 'Sorry, someone just bought this house.',
+      'has-house': 'You already own a house.',
+      'no-money': 'You do not have enough coins for this house.',
+      'no-wallet': 'Your wallet is not ready yet. Try again in a moment.'
+    };
+    paperMsg.style.color = '#b3261e';
+    paperMsg.textContent = messages[err.message] || 'Could not complete the purchase. Please try again.';
+    paperYes.disabled = (err.message === 'taken' || err.message === 'has-house' || err.message === 'no-money');
   }
 });
 
-// Runs every frame: shows the claim button at the door of a house nobody owns.
+// ---------- The button at a house door ----------
+let claimMode = null;        // 'buy', 'signin', 'view' or null (just a text label)
 let claimPlotTarget = null;
 let lastClaimText = '';
+
+claimBtn.addEventListener('click', () => {
+  if (!fb || !claimPlotTarget || !claimMode) return;
+  if (claimMode === 'signin') {
+    fb.signIn().catch((err) => console.warn('Sign in failed:', err));
+  } else {
+    openAgreement(claimPlotTarget, claimMode);
+  }
+});
+
+// Runs every frame: shows the buy button (or the owner's name) at a house door.
 function updateClaimPrompt() {
+  claimMode = null;
   claimPlotTarget = null;
   let text = '';
-  if (fb && !inside && doorPlot) {
-    if (!doorPlot.ownerId) {
-      const mine = !!currentUser && PLOTS.some((p) => p.ownerId === currentUser.uid);
-      if (!currentUser) text = 'Sign in to claim this house';
-      else if (!mine) text = 'Claim this house';
-      if (text) claimPlotTarget = doorPlot;
+
+  if (fb && !inside && doorPlot && !agreementOpen) {
+    const plot = doorPlot;
+    const uid = currentUser && currentUser.uid;
+    claimPlotTarget = plot;
+
+    if (!plot.ownerId) {
+      const price = fb.PRICES[plot.house];
+      const ownsOne = !!uid && PLOTS.some((p) => p.ownerId === uid);
+      if (!uid) {
+        text = `For sale: ${price} coins. Sign in to buy`;
+        claimMode = 'signin';
+      } else if (ownsOne) {
+        text = `For sale: ${price} coins`;
+      } else {
+        text = `Buy this house: ${price} coins`;
+        claimMode = 'buy';
+      }
+    } else if (plot.ownerId === uid) {
+      text = 'View my house agreement';
+      claimMode = 'view';
     } else {
-      text = doorPlot.ownerId === (currentUser && currentUser.uid)
-        ? 'This is your house'
-        : `Owned by ${doorPlot.ownerName || 'a player'}`;
+      text = `Owned by ${plot.ownerName || 'a player'}`;
     }
   }
-  const isButton = claimPlotTarget !== null;
+
   claimBtn.classList.toggle('hidden', text === '');
-  claimBtn.disabled = !isButton;
-  claimBtn.style.opacity = isButton ? '1' : '0.85';
+  claimBtn.disabled = claimMode === null;
+  claimBtn.style.opacity = claimMode === null ? '0.85' : '1';
   if (text !== lastClaimText && text !== '') claimBtn.textContent = text;
   lastClaimText = text;
 }
@@ -2071,7 +2193,7 @@ function animate(now) {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  if (started) {
+  if (started && !agreementOpen) {
     updatePlayer(dt);
     updateAltitudeDisplay();
     updateDoorPrompt();
