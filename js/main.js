@@ -269,7 +269,7 @@ scene.add(squareRing);
 
 // ---------- The plot grid ----------
 // Plot centres sit every 36 m. Each plot is 24 m wide, so a 12 m "street line"
-// is left between plots (at x or z = 0, +-36, +-72 ...). Roads will go there in Phase 3.
+// is left between plots (at x or z = 0, +-36, +-72 ...). Roads go there (Phase 3).
 const PLOT_PITCH = 36;
 const PLOT_SIZE = 24;
 const GRID_MIN = -3;   // grid columns/rows from -3 to 2 (centres at -90 ... +90)
@@ -714,6 +714,230 @@ HOUSE_STYLES.forEach((style) => {
 });
 
 // =====================================================
+// 6c. ROADS AND BRIDGE (data arrays + one merged shape)
+// =====================================================
+
+// ---------- Road settings ----------
+const ROAD_WIDTH = 8;       // street lines are 12 m wide, so 2 m of grass stays on each side
+const ROAD_TOP = 0.14;      // height of the road surface above the ground
+const BRIDGE_TOP = 0.55;    // height of the bridge deck above the ground
+const BRIDGE_RAMP = 6;      // length of the sloping part at each end of the bridge
+
+// ---------- THE ROAD DATA ----------
+// Nodes are junctions and road ends. To grow the road network later,
+// add a node and add a link to it in ROADS below.
+//   id  : unique name
+//   x,z : position in the world
+//   pad : false = no junction square here (the road just carries on)
+const ROAD_NODES = [
+  // Where the four spokes meet the edge of the square (hidden inside the plaza)
+  { id: 'sqN', x: 0, z: -SQUARE_RADIUS, pad: false },
+  { id: 'sqS', x: 0, z: SQUARE_RADIUS, pad: false },
+  { id: 'sqE', x: SQUARE_RADIUS, z: 0, pad: false },
+  { id: 'sqW', x: -SQUARE_RADIUS, z: 0, pad: false },
+
+  // The ring road around the square (on the street lines x/z = +-36)
+  { id: 'N', x: 0, z: -36 },
+  { id: 'S', x: 0, z: 36 },
+  { id: 'E', x: 36, z: 0 },
+  { id: 'W', x: -36, z: 0 },
+  { id: 'NE', x: 36, z: -36 },
+  { id: 'SE', x: 36, z: 36 },
+  { id: 'SW', x: -36, z: 36 },
+  { id: 'NW', x: -36, z: -36 },
+
+  // Roads leading away from the ring
+  { id: 'NE2', x: 72, z: -36 },
+  { id: 'SE2', x: 72, z: 36 },
+  { id: 'SW2', x: -72, z: 36 },
+  { id: 'NW2', x: -72, z: -36 },
+  { id: 'N2', x: 0, z: -72 },
+  { id: 'S2', x: 0, z: 72 },
+  { id: 'farW', x: -108, z: 0 },
+
+  // East road, over the river
+  { id: 'bridgeW', x: 120, z: 0, pad: false },
+  { id: 'bridgeE', x: 160, z: 0, pad: false },
+  { id: 'farE', x: 200, z: 0 }
+];
+
+// Links between two nodes. Roads must run straight west-east or north-south.
+// type 'bridge' draws a bridge (for now bridges must run west-east).
+const ROADS = [
+  // Spokes: the square to the ring
+  { from: 'sqN', to: 'N' },
+  { from: 'sqS', to: 'S' },
+  { from: 'sqE', to: 'E' },
+  { from: 'sqW', to: 'W' },
+
+  // The ring
+  { from: 'N', to: 'NE' },
+  { from: 'NE', to: 'E' },
+  { from: 'E', to: 'SE' },
+  { from: 'SE', to: 'S' },
+  { from: 'S', to: 'SW' },
+  { from: 'SW', to: 'W' },
+  { from: 'W', to: 'NW' },
+  { from: 'NW', to: 'N' },
+
+  // Roads leading away (these serve the houses at the corners)
+  { from: 'NE', to: 'NE2' },
+  { from: 'SE', to: 'SE2' },
+  { from: 'SW', to: 'SW2' },
+  { from: 'NW', to: 'NW2' },
+  { from: 'N', to: 'N2' },
+  { from: 'S', to: 'S2' },
+  { from: 'W', to: 'farW' },
+
+  // East road with the bridge
+  { from: 'E', to: 'bridgeW' },
+  { from: 'bridgeW', to: 'bridgeE', type: 'bridge' },
+  { from: 'bridgeE', to: 'farE' }
+];
+
+// A quick way to find a node by its id.
+const NODE = {};
+ROAD_NODES.forEach((node) => { NODE[node.id] = node; });
+
+// ---------- Road colours ----------
+const ASPHALT = 0x7b7580;
+const EDGE_LINE = 0xfff4e0;
+const DASH = 0xf6cf5a;
+const STONE = 0xd6c7a6;
+const STONE_LIGHT = 0xeadfc6;
+
+const roadBuilder = makeBuilder();
+
+// A flat strip of road between two points (it runs straight along x or z).
+function roadStrip(b, color, x1, z1, x2, z2, width, height) {
+  const cx = (x1 + x2) / 2;
+  const cz = (z1 + z2) / 2;
+  if (z1 === z2) b.box(color, Math.abs(x2 - x1), height, width, cx, 0, cz);
+  else b.box(color, width, height, Math.abs(z2 - z1), cx, 0, cz);
+}
+
+// Edge lines (both sides) and a dashed centre line. y = height of the road surface.
+function addMarkings(b, x1, z1, x2, z2, width, y) {
+  const horizontal = z1 === z2;
+  const len = horizontal ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+  const a0 = horizontal ? Math.min(x1, x2) : Math.min(z1, z2); // start along the road
+  const c = horizontal ? z1 : x1;                              // the centre line position
+  const mid = a0 + len / 2;
+  const edgeOffset = width / 2 - 0.55;
+  const lineH = 0.03;
+
+  // Two solid edge lines
+  [-edgeOffset, edgeOffset].forEach((off) => {
+    if (horizontal) b.box(EDGE_LINE, len, lineH, 0.2, mid, y, c + off);
+    else b.box(EDGE_LINE, 0.2, lineH, len, c + off, y, mid);
+  });
+
+  // Dashed centre line
+  const dash = 2.2;
+  const gap = 2.2;
+  const count = Math.floor((len - 1) / (dash + gap));
+  if (count < 1) return;
+  const used = count * (dash + gap) - gap;
+  const first = a0 + (len - used) / 2;
+  for (let i = 0; i < count; i++) {
+    const s = first + i * (dash + gap) + dash / 2;
+    if (horizontal) b.box(DASH, dash, lineH, 0.22, s, y, c);
+    else b.box(DASH, 0.22, lineH, dash, c, y, s);
+  }
+}
+
+// One sloping or flat piece of the bridge (stone body, asphalt top, two low walls).
+function deckPiece(b, xA, yA, xB, yB, z) {
+  const len = Math.hypot(xB - xA, yB - yA);
+  const ang = Math.atan2(yB - yA, xB - xA);
+  const cx = (xA + xB) / 2;
+  const cy = (yA + yB) / 2;
+  const nx = -Math.sin(ang); // "up" direction of the slope
+  const ny = Math.cos(ang);
+  const at = (off) => [cx + nx * off, cy + ny * off];
+
+  let p = at(-0.48);
+  b.slab(STONE, len + 0.04, 0.9, ROAD_WIDTH + 1.4, p[0], p[1], z, 0, 0, ang);   // stone body
+  p = at(-0.06);
+  b.slab(ASPHALT, len + 0.04, 0.12, ROAD_WIDTH, p[0], p[1], z, 0, 0, ang);       // road surface
+  [-1, 1].forEach((side) => {
+    const w = at(0.35);
+    b.slab(STONE_LIGHT, len + 0.04, 0.8, 0.55, w[0], w[1], z + side * 4.4, 0, 0, ang); // wall
+  });
+}
+
+// A whole bridge: ramp up, flat deck, ramp down, round posts, and road markings.
+function addBridge(b, A, B) {
+  const z = A.z;
+  const xa = Math.min(A.x, B.x);
+  const xb = Math.max(A.x, B.x);
+  const R = BRIDGE_RAMP;
+
+  deckPiece(b, xa, ROAD_TOP, xa + R, BRIDGE_TOP, z);
+  deckPiece(b, xa + R, BRIDGE_TOP, xb - R, BRIDGE_TOP, z);
+  deckPiece(b, xb - R, BRIDGE_TOP, xb, ROAD_TOP, z);
+
+  // Round stone posts where the pieces meet
+  [[xa, ROAD_TOP], [xa + R, BRIDGE_TOP], [xb - R, BRIDGE_TOP], [xb, ROAD_TOP]].forEach(([x, y]) => {
+    [-1, 1].forEach((side) => b.ball(STONE_LIGHT, 0.95, x, y + 0.8, z + side * 4.4));
+  });
+
+  // Edge lines and dashes on the flat part
+  addMarkings(b, xa + R, z, xb - R, z, ROAD_WIDTH, BRIDGE_TOP);
+}
+
+// ---------- Build everything from the data ----------
+// 1) A square at every junction
+ROAD_NODES.forEach((node) => {
+  if (node.pad === false) return;
+  roadBuilder.box(ASPHALT, ROAD_WIDTH, ROAD_TOP, ROAD_WIDTH, node.x, 0, node.z);
+});
+
+// 2) Every link: a road strip with markings, or a bridge
+ROADS.forEach((road) => {
+  const A = NODE[road.from];
+  const B = NODE[road.to];
+
+  if (road.type === 'bridge') {
+    addBridge(roadBuilder, A, B);
+    return;
+  }
+
+  // Roads stop at the edge of a junction square so lines do not cross junctions.
+  const dx = Math.sign(B.x - A.x);
+  const dz = Math.sign(B.z - A.z);
+  const trimA = A.pad === false ? 0 : ROAD_WIDTH / 2;
+  const trimB = B.pad === false ? 0 : ROAD_WIDTH / 2;
+  const x1 = A.x + dx * trimA;
+  const z1 = A.z + dz * trimA;
+  const x2 = B.x - dx * trimB;
+  const z2 = B.z - dz * trimB;
+
+  roadStrip(roadBuilder, ASPHALT, x1, z1, x2, z2, ROAD_WIDTH, ROAD_TOP);
+  addMarkings(roadBuilder, x1, z1, x2, z2, ROAD_WIDTH, ROAD_TOP);
+});
+
+// 3) All roads and bridges are ONE shape that reuses the house material.
+const roadMesh = new THREE.Mesh(roadBuilder.build(), houseMaterial);
+scene.add(roadMesh);
+
+// ---------- Is a point on a bridge? (used so the river does not slow you on the bridge) ----------
+const BRIDGES = ROADS.filter((r) => r.type === 'bridge').map((r) => {
+  const A = NODE[r.from];
+  const B = NODE[r.to];
+  return {
+    minX: Math.min(A.x, B.x),
+    maxX: Math.max(A.x, B.x),
+    minZ: A.z - ROAD_WIDTH / 2,
+    maxZ: A.z + ROAD_WIDTH / 2
+  };
+});
+
+function isOnBridge(x, z) {
+  return BRIDGES.some((b) => x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ);
+}
+
+// =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
 const EYE_HEIGHT = 1.7;      // how high your eyes are above the ground when walking
@@ -903,8 +1127,11 @@ function updatePlayer(dt) {
     speed = shift ? 30 : 14;          // flying is faster than walking
   } else {
     speed = shift ? 12 : 6;
-    // Wading through the river slows you down (only when walking).
-    if (Math.abs(player.x - riverX(player.z)) < RIVER_WIDTH / 2) speed *= 0.5;
+    // Wading through the river slows you down (only when walking, and not on the bridge).
+    if (!isOnBridge(player.x, player.z) &&
+        Math.abs(player.x - riverX(player.z)) < RIVER_WIDTH / 2) {
+      speed *= 0.5;
+    }
   }
 
   const sin = Math.sin(player.yaw);
