@@ -1654,6 +1654,36 @@ function updateFlyUI() {
 }
 
 // --- Moving the player every frame ---
+// ---------- Solid houses ----------
+// The box each house blocks, in the HOUSE's own directions (x = right, z = toward the street).
+// The front wall is at z = -0.5, so the door side is the +z side. Numbers are metres.
+const HOUSE_BOXES = {
+  cottage:     { x: 4.5, zMin: -8.5, zMax: -0.5 },
+  treehouse:   { x: 1.8, zMin: -6.3, zMax: -2.7 },   // just the trunk (the cabin is high up)
+  modern:      { x: 5.0, zMin: -8.5, zMax: -0.5 },
+  traditional: { x: 4.5, zMin: -8.5, zMax: -0.5 }
+};
+const HOUSE_BLOCK_HEIGHT = 12;   // flying higher than this lets you pass over the roofs
+const PLAYER_RADIUS = 0.6;       // keeps the camera from poking into walls
+
+// Is the point (x, z) inside the wall of a house? Only the house in that plot is checked.
+function blockedByHouse(x, z) {
+  const plot = PLOT_AT[`${Math.floor(x / PLOT_PITCH)},${Math.floor(z / PLOT_PITCH)}`];
+  if (!plot || !plot.house) return false;
+
+  const box = HOUSE_BOXES[plot.house];
+  const dx = x - plot.x;
+  const dz = z - plot.z;
+  const c = Math.cos(plot.facing);
+  const s = Math.sin(plot.facing);
+  const lx = c * dx - s * dz;    // world position -> house's own directions
+  const lz = s * dx + c * dz;
+
+  return Math.abs(lx) < box.x + PLAYER_RADIUS &&
+         lz > box.zMin - PLAYER_RADIUS &&
+         lz < box.zMax + PLAYER_RADIUS;
+}
+
 function updatePlayer(dt) {
   let forward = 0;
   let strafe = 0;
@@ -1707,8 +1737,17 @@ function updatePlayer(dt) {
     vel.z = targetZ;
   }
 
+  const oldX = player.x;
+  const oldZ = player.z;
   player.x += vel.x * dt;
   player.z += vel.z * dt;
+
+  // Houses are solid: walking into a wall stops you (flying high above a roof is fine).
+  // We try each direction on its own, so you slide along walls instead of sticking.
+  if (!inside && player.y - EYE_HEIGHT < HOUSE_BLOCK_HEIGHT) {
+    if (blockedByHouse(player.x, oldZ)) { player.x = oldX; vel.x = 0; }
+    if (blockedByHouse(player.x, player.z)) { player.z = oldZ; vel.z = 0; }
+  }
 
   // Up and down (fly mode only)
   if (flying) {
