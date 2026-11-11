@@ -1941,6 +1941,86 @@ doorBtn.addEventListener('click', () => {
 });
 
 // =====================================================
+// 8c. FIREBASE (sign in, owners, claiming a house)
+// =====================================================
+// Loaded on its own, so if Firebase is not set up yet the game still works.
+const authBtn = document.getElementById('authBtn');
+const authName = document.getElementById('authName');
+const claimBtn = document.getElementById('claimBtn');
+let fb = null;            // the Firebase helpers, once loaded
+let currentUser = null;   // the signed-in person, or null
+let hasPlot = false;      // did this person already claim a plot?
+
+import('./firebase.js').then((mod) => {
+  fb = mod;
+  authBtn.classList.remove('hidden');
+
+  fb.onUserChange((user) => {
+    currentUser = user;
+    authBtn.textContent = user ? 'Sign out' : 'Sign in with Google';
+    authName.textContent = user ? user.displayName || 'Player' : '';
+    authName.classList.toggle('hidden', !user);
+  });
+
+  // Every time owners change in Firebase, copy them into the PLOTS list.
+  fb.watchPlots((owners) => {
+    PLOTS.forEach((plot) => {
+      const o = owners[plot.id];
+      plot.ownerId = o ? o.ownerId : null;
+      plot.ownerName = o ? o.ownerName : null;
+    });
+    hasPlot = !!currentUser && PLOTS.some((p) => p.ownerId === currentUser.uid);
+  });
+}).catch((err) => console.warn('Firebase is not ready yet:', err));
+
+authBtn.addEventListener('click', () => {
+  if (!fb) return;
+  if (currentUser) fb.signOutUser();
+  else fb.signIn().catch((err) => console.warn('Sign in failed:', err));
+});
+
+claimBtn.addEventListener('click', async () => {
+  const plot = claimPlotTarget;
+  if (!fb || !plot) return;
+  if (!currentUser) {
+    fb.signIn().catch((err) => console.warn('Sign in failed:', err));
+    return;
+  }
+  try {
+    await fb.claimPlot(plot.id);
+  } catch (err) {
+    console.warn('Could not claim:', err);
+    hudHint.textContent = 'Could not claim this house. Someone may have just taken it, or you already own one.';
+  }
+});
+
+// Runs every frame: shows the claim button at the door of a house nobody owns.
+let claimPlotTarget = null;
+let lastClaimText = '';
+function updateClaimPrompt() {
+  claimPlotTarget = null;
+  let text = '';
+  if (fb && !inside && doorPlot) {
+    if (!doorPlot.ownerId) {
+      const mine = !!currentUser && PLOTS.some((p) => p.ownerId === currentUser.uid);
+      if (!currentUser) text = 'Sign in to claim this house';
+      else if (!mine) text = 'Claim this house';
+      if (text) claimPlotTarget = doorPlot;
+    } else {
+      text = doorPlot.ownerId === (currentUser && currentUser.uid)
+        ? 'This is your house'
+        : `Owned by ${doorPlot.ownerName || 'a player'}`;
+    }
+  }
+  const isButton = claimPlotTarget !== null;
+  claimBtn.classList.toggle('hidden', text === '');
+  claimBtn.disabled = !isButton;
+  claimBtn.style.opacity = isButton ? '1' : '0.85';
+  if (text !== lastClaimText && text !== '') claimBtn.textContent = text;
+  lastClaimText = text;
+}
+
+// =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
 let lastTime = performance.now();
@@ -1956,6 +2036,7 @@ function animate(now) {
     updatePlayer(dt);
     updateAltitudeDisplay();
     updateDoorPrompt();
+    updateClaimPrompt();
 
     // Every 0.3 seconds, decide which houses are detailed and which are simple.
     lodTimer += dt;
