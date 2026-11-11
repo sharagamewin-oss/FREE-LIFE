@@ -1472,3 +1472,157 @@ requestAnimationFrame(animate);
 // Everything is built: hide the loading screen and show the main menu.
 loadingScreen.classList.add('hidden');
 menuScreen.classList.remove('hidden');
+
+// =====================================================
+// 10. TREES (Phase 5) - round, tall and pine trees in groves
+// =====================================================
+
+// ---------- Settings ----------
+const TOWN_HALF = 125;        // no trees inside this square around the middle (houses + empty plots)
+const TREE_ROAD_CLEAR = ROAD_WIDTH / 2 + 5;          // keep trees this far from any road centre line
+const TREE_RIVER_CLEAR = (RIVER_WIDTH + 13) / 2 + 6; // keep trees off the river and its sandy banks
+const GROVE_COUNT = 45;       // number of small forests
+const SINGLE_TREES = 120;     // trees standing alone
+const treeRng = makeRng(777); // fixed seed: the trees are in the same places every visit
+
+// For later phases (the air breeze can raise this number to make trees sway more).
+const treeWindStrength = { value: 1 };
+
+// ---------- Three tree shapes (each one is ONE merged shape) ----------
+const TRUNK = 0x8a5a3a;
+
+function buildRoundTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.9, 2.8, 0, 0, 0);
+  b.ball(0x5fb04f, 5.2, 0, 4.4, 0, 0.9);
+  b.ball(0x6cbc58, 3.6, 1.6, 5.2, 0.6, 0.9);
+  b.ball(0x56a548, 3.4, -1.5, 4.9, -0.8, 0.9);
+  return b.build();
+}
+
+function buildTallTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.8, 3.6, 0, 0, 0);
+  b.ball(0x4f9e4a, 4.2, 0, 6.4, 0, 1.55);
+  b.ball(0x5dae52, 3.0, 0.3, 8.6, 0.2, 1.2);
+  return b.build();
+}
+
+function buildPineTree() {
+  const b = makeBuilder();
+  b.cyl(TRUNK, 0.7, 2.2, 0, 0, 0);
+  b.cone(0x3f8f5a, 5.6, 3.0, 0, 1.6, 0);
+  b.cone(0x479c60, 4.5, 2.8, 0, 3.6, 0);
+  b.cone(0x4fa668, 3.4, 2.6, 0, 5.5, 0);
+  b.cone(0x58b06f, 2.0, 1.8, 0, 7.3, 0);
+  return b.build();
+}
+
+// ---------- The material (colours come from the shapes, the sway comes from the wind clock) ----------
+const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+treeMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uWind = windUniform;
+  shader.uniforms.uStrength = treeWindStrength;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+#ifdef USE_INSTANCING
+  float sX = length(instanceMatrix[0].xyz);
+  float sY = length(instanceMatrix[1].xyz);
+  float hgt = position.y * sY;
+  float phase = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.17;
+  transformed.x += sin(uWind * 1.1 + phase) * 0.0018 * uStrength * hgt * hgt / sX;
+  transformed.z += cos(uWind * 0.9 + phase) * 0.0013 * uStrength * hgt * hgt / sX;
+#endif`);
+};
+
+// ---------- Rules: where a tree is NOT allowed ----------
+function distToSegment(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+}
+
+function treeSpotIsFree(x, z) {
+  if (Math.hypot(x, z) > 1300) return false;                           // stay inside the world
+  if (Math.abs(x) < TOWN_HALF && Math.abs(z) < TOWN_HALF) return false; // town, plots, square
+  if (Math.abs(x - riverX(z)) < TREE_RIVER_CLEAR) return false;        // river and banks
+  for (const road of ROADS) {
+    const A = NODE[road.from];
+    const B = NODE[road.to];
+    if (distToSegment(x, z, A.x, A.z, B.x, B.z) < TREE_ROAD_CLEAR) return false;
+  }
+  return true;
+}
+
+// ---------- Choose the places ----------
+const treeLists = { round: [], tall: [], pine: [] };
+const usedCells = new Set(); // stops two trees from standing on top of each other
+
+function tryPlaceTree(x, z) {
+  if (!treeSpotIsFree(x, z)) return;
+  const cell = `${Math.floor(x / 6)},${Math.floor(z / 6)}`;
+  if (usedCells.has(cell)) return;
+  usedCells.add(cell);
+
+  const r = treeRng();
+  const type = r < 0.4 ? 'round' : r < 0.65 ? 'tall' : 'pine';
+  treeLists[type].push({
+    x,
+    z,
+    size: 0.8 + treeRng() * 0.9,
+    turn: treeRng() * Math.PI * 2,
+    tint: 0.82 + treeRng() * 0.18
+  });
+}
+
+// Small forests
+for (let g = 0; g < GROVE_COUNT; g++) {
+  const angle = treeRng() * Math.PI * 2;
+  const distance = 140 + treeRng() * 560;
+  const cx = Math.cos(angle) * distance;
+  const cz = Math.sin(angle) * distance;
+  const spread = 18 + treeRng() * 22;
+  const count = 10 + Math.floor(treeRng() * 9);
+
+  for (let i = 0; i < count; i++) {
+    const ox = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
+    const oz = (treeRng() + treeRng() + treeRng() - 1.5) * 2 * spread;
+    tryPlaceTree(cx + ox, cz + oz);
+  }
+}
+
+// Trees standing alone
+for (let i = 0; i < SINGLE_TREES; i++) {
+  const angle = treeRng() * Math.PI * 2;
+  const distance = 130 + Math.sqrt(treeRng()) * 770;
+  tryPlaceTree(Math.cos(angle) * distance, Math.sin(angle) * distance);
+}
+
+// ---------- Draw them (one InstancedMesh per tree type) ----------
+const treeBuilders = { round: buildRoundTree, tall: buildTallTree, pine: buildPineTree };
+const treeMeshes = {}; // kept so later phases can find the trees
+const treeTint = new THREE.Color();
+
+Object.keys(treeLists).forEach((type) => {
+  const list = treeLists[type];
+  if (list.length === 0) return;
+
+  const mesh = new THREE.InstancedMesh(treeBuilders[type](), treeMaterial, list.length);
+  list.forEach((tree, i) => {
+    dummy.position.set(tree.x, 0, tree.z);
+    dummy.rotation.set(0, tree.turn, 0);
+    dummy.scale.set(tree.size, tree.size, tree.size);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+
+    treeTint.setRGB(tree.tint, tree.tint, tree.tint); // a little darker or lighter for variety
+    mesh.setColorAt(i, treeTint);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  treeMeshes[type] = mesh;
+});
