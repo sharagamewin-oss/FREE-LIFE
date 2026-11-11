@@ -6,7 +6,8 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
-  getFirestore, collection, onSnapshot, doc, getDoc, setDoc, runTransaction, serverTimestamp
+  getFirestore, collection, onSnapshot, doc, getDoc, setDoc, deleteDoc, runTransaction, serverTimestamp,
+  writeBatch, query, where, arrayUnion, arrayRemove, deleteField
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -27,6 +28,10 @@ export const PRICES = {
   traditional: 3000,
   modern: 4000
 };
+
+// Who can live in a house (the owner picks one when saying yes). At most MAX_MEMBERS people.
+export const ROLES = ['Wife', 'Husband', 'Love', 'Friend', 'Family', 'Roommate'];
+export const MAX_MEMBERS = 6;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -75,7 +80,9 @@ export function watchPlots(cb) {
         ownerId: d.ownerId,
         ownerName: d.ownerName || 'A player',
         price: d.price != null ? d.price : null,
-        boughtAt: d.boughtAt && d.boughtAt.toMillis ? d.boughtAt.toMillis() : null
+        boughtAt: d.boughtAt && d.boughtAt.toMillis ? d.boughtAt.toMillis() : null,
+        memberIds: d.memberIds || [],
+        members: d.members || {}
       };
     });
     cb(owners);
@@ -111,4 +118,61 @@ export async function buyPlot(plotId, house) {
       boughtAt: serverTimestamp()
     });
   });
+}
+
+// ---------- Permission to enter a house ----------
+
+// Ask the owner of a house for permission to enter.
+export async function askToEnter(plot) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('not-signed-in');
+  await setDoc(doc(db, 'requests', `${plot.id}_${user.uid}`), {
+    plotId: plot.id,
+    ownerId: plot.ownerId,
+    fromUid: user.uid,
+    fromName: user.displayName || 'A player',
+    createdAt: serverTimestamp()
+  });
+}
+
+// Owner: calls cb([{ id, plotId, fromUid, fromName }, ...]) with people waiting for a yes or no.
+export function watchRequestsToMe(uid, cb) {
+  const q = query(collection(db, 'requests'), where('ownerId', '==', uid));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, (err) => console.warn('Could not read requests:', err));
+}
+
+// Visitor: calls cb([plotId, ...]) with the houses I already asked about.
+export function watchMyRequests(uid, cb) {
+  const q = query(collection(db, 'requests'), where('fromUid', '==', uid));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => d.data().plotId));
+  }, (err) => console.warn('Could not read my requests:', err));
+}
+
+// Owner says yes: the person becomes a member (wife, love, friend...) and the request is removed.
+export async function approveRequest(req, role) {
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'plots', req.plotId), {
+    [`members.${req.fromUid}`]: { name: req.fromName, role },
+    memberIds: arrayUnion(req.fromUid)
+  });
+  batch.delete(doc(db, 'requests', req.id));
+  await batch.commit();
+}
+
+// Owner says no.
+export async function denyRequest(req) {
+  await deleteDoc(doc(db, 'requests', req.id));
+}
+
+// Owner removes a member from the house.
+export async function removeMember(plotId, uid) {
+  await writeBatch(db)
+    .update(doc(db, 'plots', plotId), {
+      [`members.${uid}`]: deleteField(),
+      memberIds: arrayRemove(uid)
+    })
+    .commit();
 }
