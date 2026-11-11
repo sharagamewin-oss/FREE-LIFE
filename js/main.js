@@ -182,7 +182,7 @@ const ground = new THREE.Mesh(
 scene.add(ground);
 
 // =====================================================
-// 5. RIVER (a curvy ribbon on the right side of the town square)
+// 5. RIVER (flowing water with soft sandy banks)
 // =====================================================
 const RIVER_WIDTH = 24;
 
@@ -191,17 +191,60 @@ function riverX(z) {
   return 140 + 35 * Math.sin(z * 0.008);
 }
 
-function makeRibbon(width, y, color, emissive) {
+// A clock for everything that sways in the wind (reeds now; trees and breeze later).
+const windUniform = { value: 0 };
+
+// Soft ripple streaks that tile without seams. They are stretched along the flow direction.
+function makeWaterTexture() {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#eaf7ff';
+  g.fillRect(0, 0, size, size);
+
+  const streakColors = ['rgba(255,255,255,0.55)', 'rgba(120,190,225,0.28)'];
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const rx = 2 + Math.random() * 4;
+    const ry = 10 + Math.random() * 26;
+    g.fillStyle = streakColors[i % 2];
+    for (let ox = -size; ox <= size; ox += size) {
+      for (let oy = -size; oy <= size; oy += size) {
+        g.beginPath();
+        g.ellipse(x + ox, y + oy, rx, ry, 0, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(c);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+// A ribbon that follows the river. One texture tile covers 14 m.
+const WATER_TILE = 14;
+
+function makeRiverGeometry(width) {
   const vertices = [];
   const normals = [];
+  const uvs = [];
   const indices = [];
   const step = 20;
   let rows = 0;
 
   for (let z = -1500; z <= 1500; z += step) {
     const cx = riverX(z);
-    vertices.push(cx - width / 2, y, z, cx + width / 2, y, z);
+    vertices.push(cx - width / 2, 0, z, cx + width / 2, 0, z);
     normals.push(0, 1, 0, 0, 1, 0);
+    uvs.push(0, z / WATER_TILE, width / WATER_TILE, z / WATER_TILE);
     rows++;
   }
 
@@ -216,22 +259,41 @@ function makeRibbon(width, y, color, emissive) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
-
-  const material = new THREE.MeshLambertMaterial({
-    color,
-    emissive,
-    side: THREE.DoubleSide,
-    polygonOffset: true,       // stops flickering where it touches the ground
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1
-  });
-  return new THREE.Mesh(geo, material);
+  return geo;
 }
 
-// Sandy bank (wider, underneath) and the water on top.
-scene.add(makeRibbon(RIVER_WIDTH + 8, 0.05, 0xf0dca6, 0x000000));
-scene.add(makeRibbon(RIVER_WIDTH, 0.12, 0x62c3e6, 0x14405a));
+// One layer of the river. Higher "layer" numbers are drawn on top (this stops flickering).
+function makeRiverLayer(width, y, material, layer) {
+  material.side = THREE.DoubleSide;
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -layer;
+  material.polygonOffsetUnits = -layer;
+  const mesh = new THREE.Mesh(makeRiverGeometry(width), material);
+  mesh.position.y = y;
+  return mesh;
+}
+
+function flatColor(color, emissive = 0x000000) {
+  return new THREE.MeshLambertMaterial({ color, emissive });
+}
+
+// Banks, from the outside in: dry sand, wet sand, then a pale shallow edge.
+scene.add(makeRiverLayer(RIVER_WIDTH + 13, 0.04, flatColor(0xf6e7bb), 1));
+scene.add(makeRiverLayer(RIVER_WIDTH + 7, 0.06, flatColor(0xe3c98f), 2));
+scene.add(makeRiverLayer(RIVER_WIDTH + 3, 0.09, flatColor(0x9fe0f0, 0x1a5068), 3));
+
+// The flowing water on top, with a soft shine from the sun.
+const waterTexture = makeWaterTexture();
+const waterMaterial = new THREE.MeshPhongMaterial({
+  map: waterTexture,
+  color: 0x62c3e6,
+  emissive: 0x14405a,
+  specular: 0x9fd0ea,
+  shininess: 50
+});
+scene.add(makeRiverLayer(RIVER_WIDTH, 0.12, waterMaterial, 4));
 
 // =====================================================
 // 6. TOWN SQUARE (empty round plaza in the middle)
@@ -938,6 +1000,133 @@ function isOnBridge(x, z) {
 }
 
 // =====================================================
+// 6d. RIVER DECORATIONS (stones and swaying reeds on the banks)
+// =====================================================
+
+// A small random number maker with a fixed seed, so the banks look the same every visit.
+function makeRng(seed) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const bankRng = makeRng(2026);
+
+// Keep stones and reeds away from the bridge and its road.
+function nearBridge(x, z) {
+  return BRIDGES.some((b) =>
+    x > b.minX - 6 && x < b.maxX + 6 && z > b.minZ - 6 && z < b.maxZ + 6
+  );
+}
+
+// Finds a random spot on the river bank.
+//   offset: distance from the water's edge (negative = a little inside the water edge)
+//   range : how far up and down the river to place things (metres from the middle)
+function randomBankSpot(minOffset, maxOffset, range) {
+  for (let tries = 0; tries < 20; tries++) {
+    const z = (bankRng() - 0.5) * 2 * range;
+    const side = bankRng() < 0.5 ? -1 : 1;
+    const offset = minOffset + bankRng() * (maxOffset - minOffset);
+    const x = riverX(z) + side * (RIVER_WIDTH / 2 + offset);
+    if (!nearBridge(x, z)) return { x, z };
+  }
+  return null;
+}
+
+// ---------- Stones (one InstancedMesh) ----------
+const STONE_COUNT = 220;
+const stoneColors = [0x9a9690, 0xb3aea3, 0x8c8780, 0xa89f8f, 0xc2bba9];
+const stoneMesh = new THREE.InstancedMesh(
+  new THREE.IcosahedronGeometry(0.5, 0),
+  new THREE.MeshLambertMaterial({ flatShading: true }),
+  STONE_COUNT
+);
+const stoneColor = new THREE.Color();
+let stoneCount = 0;
+
+for (let i = 0; i < STONE_COUNT; i++) {
+  const spot = randomBankSpot(-1.5, 5, 600);
+  if (!spot) continue;
+
+  const size = 0.5 + bankRng() * 1.1;
+  dummy.position.set(spot.x, 0.1 + size * 0.15, spot.z);
+  dummy.rotation.set(bankRng() * 0.4, bankRng() * Math.PI * 2, bankRng() * 0.4);
+  dummy.scale.set(size * (0.9 + bankRng() * 0.6), size * (0.45 + bankRng() * 0.3), size * (0.8 + bankRng() * 0.5));
+  dummy.updateMatrix();
+  stoneMesh.setMatrixAt(stoneCount, dummy.matrix);
+
+  stoneColor.set(stoneColors[Math.floor(bankRng() * stoneColors.length)]);
+  stoneMesh.setColorAt(stoneCount, stoneColor);
+  stoneCount++;
+}
+stoneMesh.count = stoneCount;
+stoneMesh.instanceMatrix.needsUpdate = true;
+if (stoneMesh.instanceColor) stoneMesh.instanceColor.needsUpdate = true;
+stoneMesh.frustumCulled = false;
+scene.add(stoneMesh);
+
+// ---------- Reeds (thin blades in clusters, they sway in the wind) ----------
+const REED_CLUSTERS = 160;
+const MAX_REEDS = REED_CLUSTERS * 7;
+const reedColors = [0x6fae4a, 0x5c9c42, 0x80bb57];
+
+const reedGeometry = new THREE.ConeGeometry(0.5, 1, 5, 1, true);
+reedGeometry.translate(0, 0.5, 0); // the bottom of each blade sits at y = 0
+
+const reedMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+reedMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uWind = windUniform;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform float uWind;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+#ifdef USE_INSTANCING
+  float sX = length(instanceMatrix[0].xyz);
+  float sY = length(instanceMatrix[1].xyz);
+  float hgt = position.y * sY;
+  float phase = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.29;
+  transformed.x += sin(uWind * 1.7 + phase) * 0.035 * hgt * hgt / sX;
+  transformed.z += cos(uWind * 1.3 + phase) * 0.025 * hgt * hgt / sX;
+#endif`);
+};
+
+const reedMesh = new THREE.InstancedMesh(reedGeometry, reedMaterial, MAX_REEDS);
+const reedColor = new THREE.Color();
+let reedCount = 0;
+
+for (let i = 0; i < REED_CLUSTERS; i++) {
+  const spot = randomBankSpot(-0.8, 2.2, 500);
+  if (!spot) continue;
+
+  const blades = 4 + Math.floor(bankRng() * 4);
+  for (let r = 0; r < blades; r++) {
+    const height = 1.4 + bankRng() * 1.4;
+    const width = 0.13 + bankRng() * 0.05;
+    dummy.position.set(
+      spot.x + (bankRng() - 0.5) * 1.8,
+      0.1,
+      spot.z + (bankRng() - 0.5) * 1.8
+    );
+    dummy.rotation.set((bankRng() - 0.5) * 0.3, bankRng() * Math.PI * 2, (bankRng() - 0.5) * 0.3);
+    dummy.scale.set(width, height, width);
+    dummy.updateMatrix();
+    reedMesh.setMatrixAt(reedCount, dummy.matrix);
+
+    reedColor.set(reedColors[Math.floor(bankRng() * reedColors.length)]);
+    reedMesh.setColorAt(reedCount, reedColor);
+    reedCount++;
+  }
+}
+reedMesh.count = reedCount;
+reedMesh.instanceMatrix.needsUpdate = true;
+if (reedMesh.instanceColor) reedMesh.instanceColor.needsUpdate = true;
+reedMesh.frustumCulled = false;
+scene.add(reedMesh);
+
+// =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
 const EYE_HEIGHT = 1.7;      // how high your eyes are above the ground when walking
@@ -1271,6 +1460,10 @@ function animate(now) {
     cloud.position.x += dt * 3;
     if (cloud.position.x > 800) cloud.position.x = -800;
   });
+
+  // The river flows (the ripples slide along the water) and the wind clock ticks.
+  waterTexture.offset.y -= dt * 0.05;
+  windUniform.value = now / 1000;
 
   renderer.render(scene, camera);
 }
