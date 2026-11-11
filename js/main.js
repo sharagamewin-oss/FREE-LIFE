@@ -204,8 +204,30 @@ function riverX(z) {
   return 140 + 35 * Math.sin(z * 0.008);
 }
 
-// A clock for everything that sways in the wind (reeds, trees, and the breeze later).
+// A clock for everything that sways in the wind (reeds, trees).
+// It runs a little faster during a gust (see section 6g, THE BREEZE).
 const windUniform = { value: 0 };
+
+// The breeze: gustUniform is 0 in calm air and goes up to 1 in the strongest gust.
+// windDirUniform is the direction the wind blows TOWARD, on the ground (x, z).
+const gustUniform = { value: 0 };
+const windDirUniform = { value: new THREE.Vector2(0.8, 0.6).normalize() };
+
+// Shader code shared by trees and reeds: during a gust they lean along the wind direction,
+// and the gust "rolls" across the land as a wave instead of hitting everything at once.
+// "leanAmount" is how far (in metres, at 1 m tall squared) a gust bends them.
+function gustLeanGLSL(leanAmount) {
+  return `
+  float sZ = length(instanceMatrix[2].xyz);
+  vec3 axisX = instanceMatrix[0].xyz / sX;
+  vec3 axisZ = instanceMatrix[2].xyz / sZ;
+  vec3 worldDir = vec3(uWindDir.x, 0.0, uWindDir.y);
+  vec2 localDir = vec2(dot(axisX, worldDir), dot(axisZ, worldDir));
+  float front = 0.75 + 0.25 * sin(dot(instanceMatrix[3].xz, uWindDir) * 0.03 - uWind * 1.6);
+  float lean = uGust * front * ${leanAmount} * hgt * hgt / sX;
+  transformed.x += localDir.x * lean;
+  transformed.z += localDir.y * lean;`;
+}
 
 // Soft ripple streaks that tile without seams. They are stretched along the flow direction.
 function makeWaterTexture() {
@@ -1474,16 +1496,20 @@ reedGeometry.translate(0, 0.5, 0); // the bottom of each blade sits at y = 0
 const reedMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
 reedMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uWind = windUniform;
+  shader.uniforms.uGust = gustUniform;
+  shader.uniforms.uWindDir = windDirUniform;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uWind;')
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uGust;\nuniform vec2 uWindDir;')
     .replace('#include <begin_vertex>', `#include <begin_vertex>
 #ifdef USE_INSTANCING
   float sX = length(instanceMatrix[0].xyz);
   float sY = length(instanceMatrix[1].xyz);
   float hgt = position.y * sY;
   float phase = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.29;
-  transformed.x += sin(uWind * 1.7 + phase) * 0.035 * hgt * hgt / sX;
-  transformed.z += cos(uWind * 1.3 + phase) * 0.025 * hgt * hgt / sX;
+  float flutter = 1.0 + uGust * 1.5;   // blades shake more in a gust
+  transformed.x += sin(uWind * 1.7 + phase) * 0.035 * flutter * hgt * hgt / sX;
+  transformed.z += cos(uWind * 1.3 + phase) * 0.025 * flutter * hgt * hgt / sX;
+  ${gustLeanGLSL('0.07')}
 #endif`);
 };
 
@@ -1535,7 +1561,7 @@ const GROVE_COUNT = 80;       // number of small forests
 const SINGLE_TREES = 150;     // trees standing alone
 const treeRng = makeRng(777); // fixed seed: the trees are in the same places every visit
 
-// For later phases (the air breeze can raise this number to make trees sway more).
+// How much the trees sway. The breeze (section 6g) raises this number during a gust.
 const treeWindStrength = { value: 1 };
 
 // ---------- Three tree shapes (each one is ONE merged shape) ----------
@@ -1573,8 +1599,10 @@ const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
 treeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uWind = windUniform;
   shader.uniforms.uStrength = treeWindStrength;
+  shader.uniforms.uGust = gustUniform;
+  shader.uniforms.uWindDir = windDirUniform;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;\nuniform float uGust;\nuniform vec2 uWindDir;')
     .replace('#include <begin_vertex>', `#include <begin_vertex>
 #ifdef USE_INSTANCING
   float sX = length(instanceMatrix[0].xyz);
@@ -1583,6 +1611,7 @@ treeMaterial.onBeforeCompile = (shader) => {
   float phase = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.17;
   transformed.x += sin(uWind * 1.1 + phase) * 0.0018 * uStrength * hgt * hgt / sX;
   transformed.z += cos(uWind * 0.9 + phase) * 0.0013 * uStrength * hgt * hgt / sX;
+  ${gustLeanGLSL('0.0045')}
 #endif`);
 };
 
@@ -2251,6 +2280,7 @@ function setHint() {
 
 startBtn.addEventListener('click', () => {
   started = true;
+  startWindSound();   // browsers only allow sound after a click, so the wind starts here
   menuScreen.classList.add('hidden');
   hud.classList.remove('hidden');
 
@@ -2771,6 +2801,214 @@ function updateClaimPrompt() {
 }
 
 // =====================================================
+// 6g. THE BREEZE (an occasional gust of wind, like a real day outdoors)
+// =====================================================
+// The air is almost still most of the time. Every so often a gust arrives:
+// it builds up, peaks and fades away. While it blows:
+//   - trees and reeds lean along the wind and sway harder (a wave rolls across the land)
+//   - the clouds drift a little faster
+//   - a few leaves fly past you
+//   - a soft wind sound swells and fades (quieter when you are inside a house)
+
+// ---------- Settings (change these numbers to change the weather) ----------
+const BREEZE_FIRST_GUST = 6;     // seconds after the page loads until the first gust
+const BREEZE_CALM_MIN = 15;      // seconds of calm between gusts (random between min and max)
+const BREEZE_CALM_MAX = 45;
+const BREEZE_LENGTH_MIN = 5;     // how long one gust lasts, in seconds
+const BREEZE_LENGTH_MAX = 12;
+const BREEZE_STILL_AIR = 0.05;   // the faint steady breath of wind between gusts
+
+const breeze = {
+  calmLeft: BREEZE_FIRST_GUST,   // seconds until the next gust starts
+  blowing: false,                // true while a gust is happening
+  gustTime: 0,                   // how long this gust has been blowing
+  gustLength: 0,                 // how long this gust will last
+  gustPeak: 0,                   // how strong this gust gets (0 to 1)
+  level: 0,                      // smooth strength of the gust right now (0 to 1)
+  clock: 0                       // wind clock, runs faster in a gust
+};
+
+const randomBetween = (a, b) => a + Math.random() * (b - a);
+
+function updateBreeze(dt) {
+  let target = 0;
+
+  if (breeze.blowing) {
+    breeze.gustTime += dt;
+    const t = breeze.gustTime / breeze.gustLength;
+    if (t >= 1) {
+      breeze.blowing = false;
+      breeze.calmLeft = randomBetween(BREEZE_CALM_MIN, BREEZE_CALM_MAX);
+    } else {
+      const bell = Math.sin(Math.PI * t);   // 0 -> 1 -> 0 over the gust
+      target = breeze.gustPeak * bell * bell;
+    }
+  } else {
+    breeze.calmLeft -= dt;
+    if (breeze.calmLeft <= 0) {
+      breeze.blowing = true;
+      breeze.gustTime = 0;
+      breeze.gustLength = randomBetween(BREEZE_LENGTH_MIN, BREEZE_LENGTH_MAX);
+      breeze.gustPeak = randomBetween(0.45, 1);   // some gusts are gentle, some are strong
+    }
+  }
+
+  // Ease towards the target so nothing ever jumps.
+  breeze.level += (target - breeze.level) * Math.min(1, dt * 3);
+
+  // A gust is not perfectly steady: it flutters a little.
+  const flutter = 0.88 + 0.12 * Math.sin(breeze.clock * 2.3) * Math.sin(breeze.clock * 0.9 + 1);
+  const gust = Math.min(1, BREEZE_STILL_AIR + breeze.level * flutter);
+
+  gustUniform.value = gust;
+  treeWindStrength.value = 1 + 4 * gust;          // trees sway up to 5x more
+  breeze.clock += dt * (1 + 1.2 * gust);          // everything sways a bit faster too
+  windUniform.value = breeze.clock;
+}
+
+// ---------- Leaves blowing past (only visible during a gust) ----------
+const LEAF_COUNT = 70;
+const LEAF_RADIUS = 28;   // leaves live in a circle this big around you
+const leafColors = [0x6cbc58, 0x8fc65a, 0xc9b94a, 0xd28a3c, 0x5fb04f];
+
+const leafMesh = new THREE.InstancedMesh(
+  new THREE.PlaneGeometry(0.22, 0.14),
+  new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
+  LEAF_COUNT
+);
+leafMesh.frustumCulled = false;
+leafMesh.visible = false;
+scene.add(leafMesh);
+
+const leaves = [];
+const leafColor = new THREE.Color();
+for (let i = 0; i < LEAF_COUNT; i++) {
+  leaves.push({
+    x: player.x + randomBetween(-LEAF_RADIUS, LEAF_RADIUS),
+    y: 0.5 + Math.random() * 6,
+    z: player.z + randomBetween(-LEAF_RADIUS, LEAF_RADIUS),
+    speed: randomBetween(0.6, 1.1),     // some leaves are faster than others
+    wobble: randomBetween(1.5, 3.5),    // how fast it flutters
+    phase: Math.random() * Math.PI * 2,
+    spin: randomBetween(2, 6)
+  });
+  leafColor.set(leafColors[i % leafColors.length]);
+  leafMesh.setColorAt(i, leafColor);
+}
+if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
+
+// Put a leaf back at the upwind edge of the circle, at a random height.
+function respawnLeaf(leaf, anywhere) {
+  const wx = windDirUniform.value.x;
+  const wz = windDirUniform.value.y;
+  const side = randomBetween(-LEAF_RADIUS, LEAF_RADIUS);   // sideways position
+  const back = anywhere ? randomBetween(-LEAF_RADIUS, LEAF_RADIUS) : -LEAF_RADIUS; // upwind position
+  leaf.x = player.x + wx * back - wz * side;
+  leaf.z = player.z + wz * back + wx * side;
+  leaf.y = Math.max(0.4, player.y - 1.5) + Math.random() * 6;
+}
+
+function updateLeaves(dt) {
+  const strength = gustUniform.value;
+  const show = !inside && strength > 0.15;
+  leafMesh.visible = show;
+  if (!show) return;
+
+  const wx = windDirUniform.value.x;
+  const wz = windDirUniform.value.y;
+  const size = Math.min(1, (strength - 0.15) * 3);   // leaves fade in with scale as the gust builds
+  const t = breeze.clock;
+
+  for (let i = 0; i < LEAF_COUNT; i++) {
+    const leaf = leaves[i];
+    const flow = leaf.speed * (2 + 10 * strength);   // metres per second along the wind
+    const flap = Math.sin(t * leaf.wobble + leaf.phase);
+    leaf.x += (wx * flow - wz * flap * 0.8) * dt;
+    leaf.z += (wz * flow + wx * flap * 0.8) * dt;
+    leaf.y += (flap * 0.9 - 0.3) * dt;               // bobs up and down, drifts slowly down
+
+    // Too far from you, or on the ground? Send it back upwind.
+    const dx = leaf.x - player.x;
+    const dz = leaf.z - player.z;
+    const ahead = dx * wx + dz * wz;
+    if (ahead > LEAF_RADIUS || Math.abs(dx) > LEAF_RADIUS * 1.6 || Math.abs(dz) > LEAF_RADIUS * 1.6 || leaf.y < 0.15) {
+      respawnLeaf(leaf, false);
+    }
+
+    dummy.position.set(leaf.x, leaf.y, leaf.z);
+    dummy.rotation.set(t * leaf.spin, t * leaf.spin * 0.7 + leaf.phase, t * leaf.spin * 0.4);
+    dummy.scale.setScalar(size);
+    dummy.updateMatrix();
+    leafMesh.setMatrixAt(i, dummy.matrix);
+  }
+  leafMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------- The sound of the wind (soft noise that swells with the gust) ----------
+// Browsers only allow sound after a tap or click, so this starts from the "Enter the World" button.
+let windAudio = null;
+
+function startWindSound() {
+  if (windAudio) {
+    if (windAudio.ctx.state === 'suspended') windAudio.ctx.resume();
+    return;
+  }
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+
+  try {
+    const ctx = new AudioCtx();
+
+    // 3 seconds of soft "brown" noise that loops without a click (the end fades into the start).
+    const length = ctx.sampleRate * 3;
+    const fade = Math.floor(ctx.sampleRate * 0.2);
+    const raw = new Float32Array(length + fade);
+    let last = 0;
+    for (let i = 0; i < raw.length; i++) {
+      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+      raw[i] = last * 3.5;
+    }
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) data[i] = raw[i];
+    for (let i = 0; i < fade; i++) {
+      const a = i / fade;
+      data[i] = raw[i] * Math.sqrt(a) + raw[length + i] * Math.sqrt(1 - a);
+    }
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+
+    const filter = ctx.createBiquadFilter();   // a darker sound when calm, brighter in a strong gust
+    filter.type = 'lowpass';
+    filter.frequency.value = 250;
+    filter.Q.value = 0.7;
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    source.start();
+
+    windAudio = { ctx, filter, gain };
+  } catch (err) {
+    windAudio = null;   // no sound is fine, the breeze still looks right
+  }
+}
+
+function updateWindSound() {
+  if (!windAudio) return;
+  const strength = gustUniform.value;
+  const muffle = inside ? 0.25 : 1;   // walls make the wind quieter
+  const now = windAudio.ctx.currentTime;
+  windAudio.gain.gain.setTargetAtTime(strength * 0.18 * muffle, now, 0.2);
+  windAudio.filter.frequency.setTargetAtTime(250 + strength * 750 * muffle, now, 0.2);
+}
+
+// =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
 let lastTime = performance.now();
@@ -2803,15 +3041,20 @@ function animate(now) {
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
 
-  // Clouds drift slowly to the right, then wrap around.
+  // The breeze: gusts come and go, and move the trees, reeds, leaves and the wind sound.
+  updateBreeze(dt);
+  updateLeaves(dt);
+  updateWindSound();
+
+  // Clouds drift slowly to the right (a little faster in a gust), then wrap around.
+  const cloudSpeed = 3 + gustUniform.value * 5;
   clouds.children.forEach((cloud) => {
-    cloud.position.x += dt * 3;
+    cloud.position.x += dt * cloudSpeed;
     if (cloud.position.x > 800) cloud.position.x = -800;
   });
 
-  // The river flows (the ripples slide along the water) and the wind clock ticks.
+  // The river flows (the ripples slide along the water).
   waterTexture.offset.y -= dt * 0.05;
-  windUniform.value = now / 1000;
 
   renderer.render(scene, camera);
 }
