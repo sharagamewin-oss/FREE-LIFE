@@ -248,3 +248,45 @@ html, body {
   transform: translate(-50%, 3px);
   box-shadow: 0 2px 0 #e0a56a;
 }
+
+/* Sign in bar (top centre) */
+#authBar {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 40;
+  font-size: 14px;
+  font-weight: bold;
+  color: #fff7e6;
+  text-shadow: 0 1px 4px rgba(30, 60, 90, 0.8);
+}
+
+#authBtn,
+#claimBtn {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: bold;
+  color: #7a3b22;
+  background: #fff1d0;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 16px;
+  box-shadow: 0 3px 0 #e0a56a;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* Claim button sits just above the door button */
+#claimBtn {
+  position: fixed;
+  left: 50%;
+  bottom: 110px;
+  transform: translateX(-50%);
+  font-size: 18px;
+  padding: 12px 26px;
+  z-index: 25;
+}
