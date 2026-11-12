@@ -211,6 +211,83 @@ const windUniform = { value: 0 };
 // and the trees, branches and reeds lean and shake more.
 const breeze = { value: 1 };
 
+// The direction the wind blows TOWARD, on the ground (x, z). Light things lean this way in a gust.
+const windDirUniform = { value: new THREE.Vector2(0.8, 0.6).normalize() };
+
+// Shader code for LIGHT things (leaves, branch tips, flowers, garlands, petals, a hanging bell).
+// Every point of a shape has a "flex" number (see makeBuilder): 0 = stays still, 1 = moves freely.
+// In a gust a flexible point is pushed along the wind, swings slowly (whole branches and stems
+// moving) and rustles quickly (single leaves). Even in calm air it stirs a tiny bit.
+//   lean   : how far (m) a gust pushes it downwind
+//   swing  : how far (m) it swings slowly
+//   rustle : how far (m) it shakes quickly
+function flexSwayGLSL(lean, swing, rustle) {
+  return `
+  if (flex > 0.001) {
+    #ifdef USE_INSTANCING
+      vec3 fwp = (instanceMatrix * vec4(position, 1.0)).xyz;
+    #else
+      vec3 fwp = position;
+    #endif
+    float fgust = clamp((uStrength - 1.0) * 0.3, 0.0, 1.2);
+    float fg = 0.15 + fgust;
+    float slowA = sin(uWind * 2.1 + fwp.x * 0.8 + fwp.z * 0.6);
+    float slowB = cos(uWind * 1.7 + fwp.z * 0.9 - fwp.x * 0.5);
+    float fastA = sin(uWind * 9.0 + fwp.x * 4.1 + fwp.y * 3.3 + fwp.z * 2.7);
+    float fastB = cos(uWind * 11.0 + fwp.x * 3.1 - fwp.y * 4.3 + fwp.z * 3.7);
+    vec3 push = vec3(uWindDir.x, 0.0, uWindDir.y) * (fgust * ${lean} * (0.7 + 0.3 * slowA));
+    vec3 off = push + vec3(slowA * ${swing} * fg, 0.0, slowB * ${swing} * fg);
+    off += vec3(fastA, 0.5 * fastB, fastB) * ${rustle} * fg;
+    off *= flex;
+    #ifdef USE_INSTANCING
+      vec3 fsc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+      vec3 fax = instanceMatrix[0].xyz / fsc.x;
+      vec3 fay = instanceMatrix[1].xyz / fsc.y;
+      vec3 faz = instanceMatrix[2].xyz / fsc.z;
+      off = vec3(dot(fax, off) / fsc.x, dot(fay, off) / fsc.y, dot(faz, off) / fsc.z);
+    #endif
+    transformed += off;
+  }`;
+}
+
+// Gives a material the "light things move in the wind" effect.
+// "name" must be different for every different set of numbers.
+function addFlexSway(material, name, lean, swing, rustle) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uWind = windUniform;
+    shader.uniforms.uStrength = breeze;
+    shader.uniforms.uWindDir = windDirUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uStrength;\nuniform vec2 uWindDir;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + flexSwayGLSL(lean, swing, rustle));
+  };
+  material.customProgramCacheKey = () => name;
+}
+
+// Lamp flames flicker all the time and lean away from the wind. In a gust they dance and lean a lot.
+function makeFlameMaterial() {
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true });
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uWind = windUniform;
+    shader.uniforms.uStrength = breeze;
+    shader.uniforms.uWindDir = windDirUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uStrength;\nuniform vec2 uWindDir;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+  float flameGust = clamp((uStrength - 1.0) * 0.3, 0.0, 1.2);
+  float flick = 0.012 + 0.035 * flameGust;
+  float flickX = sin(uWind * 25.0 + position.x * 40.0 + position.z * 31.0) + 0.6 * sin(uWind * 41.0 + position.z * 50.0);
+  float flickZ = cos(uWind * 29.0 + position.x * 37.0) + 0.6 * cos(uWind * 47.0 + position.x * 23.0);
+  vec3 flameOff = vec3(
+    uWindDir.x * flameGust * 0.16 + flickX * flick,
+    -flameGust * 0.05,
+    uWindDir.y * flameGust * 0.16 + flickZ * flick);
+  transformed += flameOff * flex;`);
+  };
+  material.customProgramCacheKey = () => 'flame';
+  return material;
+}
+
 // Soft ripple streaks that tile without seams. They are stretched along the flow direction.
 function makeWaterTexture() {
   const size = 256;
@@ -483,6 +560,23 @@ function makeBuilder() {
   const s = new THREE.Vector3();
   const c = new THREE.Color();
 
+  // "Flex" says how freely each part moves in the wind: 0 = stiff (stone, walls, wood),
+  // 1 = moves freely (leaves, flowers, garlands, flames). Every point of a part gets its own number.
+  //   flex(v)              : the whole part has the same flex v
+  //   flexUp(yBase, yTip)  : flex grows from 0 at yBase to v at yTip (flower stems, flames, branch tips)
+  //   flexDown(yTop, yBot) : flex grows from 0 at yTop to v at yBot (hanging things: bells, ropes)
+  // The setting stays on for every part added after it, so call flex(0) to turn it off again.
+  const flex = [];
+  let flexMode = 0;      // 0 = same everywhere, 1 = grows upwards, 2 = grows downwards
+  let flexValue = 0;
+  let flexA = 0;
+  let flexB = 1;
+  const flexAt = (y) => {
+    if (flexMode === 0) return flexValue;
+    const t = flexMode === 1 ? (y - flexA) / (flexB - flexA) : (flexA - y) / (flexA - flexB);
+    return flexValue * Math.max(0, Math.min(1, t));
+  };
+
   // Adds one part: shape, colour, centre position, size, rotation.
   function add(geo, color, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) {
     if (liteMode) {
@@ -506,11 +600,19 @@ function makeBuilder() {
       pos.push(pa[i]);
       nor.push(na[i]);
     }
-    for (let i = 0; i < pa.length / 3; i++) col.push(c.r, c.g, c.b);
+    for (let i = 0; i < pa.length / 3; i++) {
+      col.push(c.r, c.g, c.b);
+      flex.push(flexAt(pa[i * 3 + 1]));
+    }
     g.dispose();
   }
 
   return {
+    // Wind flexibility for the parts added after these calls (see the note above).
+    flex(v) { flexMode = 0; flexValue = v; },
+    flexUp(yBase, yTip, v = 1) { flexMode = 1; flexValue = v; flexA = yBase; flexB = yTip; },
+    flexDown(yTop, yBot, v = 1) { flexMode = 2; flexValue = v; flexA = yTop; flexB = yBot; },
+
     // For these, (x, y, z) is the middle of the BOTTOM of the part.
     box(color, w, h, d, x, y, z) { add(U_BOX, color, x, y + h / 2, z, w, h, d); },
     cyl(color, dia, h, x, y, z) { add(U_CYL, color, x, y + h / 2, z, dia, h, dia); },
@@ -531,6 +633,7 @@ function makeBuilder() {
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setAttribute('flex', new THREE.Float32BufferAttribute(flex, 1));
       return g;
     }
   };
@@ -600,18 +703,22 @@ function flowerBed(b, x, z, w, d) {
   b.box(0x7a5237, w, 0.18, d, x, G, z);
   if (liteMode) return;
   const n = Math.round(w * d * 0.9);
+  b.flexUp(G + 0.15, G + 0.95, 0.9);   // flowers nod in the wind: the stem barely, the flower head most
   for (let i = 0; i < n; i++) {
     const fx = x + (Math.random() - 0.5) * (w - 0.6);
     const fz = z + (Math.random() - 0.5) * (d - 0.6);
     b.dot(0x5fae4e, 0.45, fx, G + 0.38, fz);
     b.dot(FLOWER_COLORS[i % FLOWER_COLORS.length], 0.42, fx, G + 0.7, fz);
   }
+  b.flex(0);
 }
 
 // A round bush.
 function bush(b, x, z, size = 1.9) {
   if (liteMode) return;
+  b.flex(0.5);   // the leaves of a bush ruffle in the wind
   b.ball(LEAF, size, x, G + size * 0.42, z, 0.85);
+  b.flex(0);
 }
 
 // ---------- STYLE 1: COTTAGE (round, warm, thatched) ----------
@@ -667,11 +774,13 @@ function buildTreehouse() {
 
   // Leafy crown around the cabin (not in front, so the door stays visible)
   const leafColors = [0x6dbb5a, 0x58a84d, 0x7fc968];
+  b.flex(1);   // the leaves shake in the wind
   [0, 180, 215, 250, 290, 325].forEach((deg, i) => {
     const a = (deg * Math.PI) / 180;
     b.ball(leafColors[i % 3], 4.4, Math.cos(a) * 4.3, G + 7.2 + (i % 2) * 0.8, -4.5 + Math.sin(a) * 4.3, 0.85);
   });
   b.ball(0x58a84d, 4.5, 0, G + 10.2, -6.2, 0.85);
+  b.flex(0);
 
   // Ladder up to the platform
   b.box(0xa8764a, 0.14, 5.4, 0.14, -0.5, G, -0.35);
@@ -782,7 +891,9 @@ function buildTraditional() {
   [-3.2, 3.2].forEach((x) => {
     frontWindow(b, x, G + 1.3, Zf, 1.3, 1.5, WHITE, GLASS);
     b.box(WOOD_DARK, 1.8, 0.3, 0.45, x, G + 0.75, Zf + 0.3);
+    b.flex(0.4);   // window-box flowers nod in the wind
     [-0.5, 0, 0.5].forEach((o, i) => b.dot(FLOWER_COLORS[i], 0.4, x + o, G + 1.15, Zf + 0.3));
+    b.flex(0);
   });
   b.cylZ(WHITE, 1.6, 0.16, 0, G + wallH + 1.05, Zf + 0.04); // round attic window
   b.cylZ(GLASS, 1.25, 0.2, 0, G + wallH + 1.05, Zf + 0.04);
@@ -801,6 +912,7 @@ function buildTraditional() {
 
 // ---------- Build each house twice: DETAILED (near you) and LITE (far away) ----------
 const houseMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+addFlexSway(houseMaterial, 'house', 0.2, 0.15, 0.05);   // garden flowers, bushes and treehouse leaves move in the wind
 const houseBuilders = {
   cottage: buildCottage,
   treehouse: buildTreehouse,
@@ -893,6 +1005,12 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   const f = makeBuilder();               // flames (drawn bright, never dark)
   const t = makeBuilder();               // the Peepal tree itself (this part sways in the wind)
 
+  // One lamp flame. It is fixed at the bottom and flickers and leans more towards the tip.
+  function flame(dia, h, x, y, z) {
+    f.flexUp(y, y + h, 1);
+    f.cone(0xffd24a, dia, h, x, y, z);
+  }
+
   // A thin part pointing from one point to another (branches, arms, roots).
   const upAxis = new THREE.Vector3(0, 1, 0);
   const dirVec = new THREE.Vector3();
@@ -938,7 +1056,11 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
 
   // Big spreading branches and the leafy crown
   const greens = [0x4f9b3a, 0x5fae3f, 0x6dbb48, 0x7ec850, 0x429134];
-  const crown = (x, y, z, dia, squash) => t.ball(greens[Math.floor(rng() * greens.length)], dia, x, y, z, squash);
+  // Every leafy ball of the crown is fully flexible, so the leaves shake and the branches swing in a gust.
+  const crown = (x, y, z, dia, squash) => {
+    t.flex(1);
+    t.ball(greens[Math.floor(rng() * greens.length)], dia, x, y, z, squash);
+  };
 
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + rng() * 0.4;
@@ -946,7 +1068,9 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     const sa = Math.sin(a);
     const midY = TOP2 + 12 + rng() * 1.5;
     const endY = TOP2 + 14.2 + rng() * 2;
+    t.flexUp(TOP2 + 9, midY, 0.25);         // the big limb moves a little, more towards its end
     treeLimb(WOOD, 1.3, ca * 0.6, TOP2 + 9.0 + rng() * 1.2, sa * 0.6, ca * 5.5, midY, sa * 5.5);
+    t.flexUp(midY, endY, 0.8);              // the thin outer branch swings the most at its tip
     treeLimb(WOOD, 0.8, ca * 5.5, midY, sa * 5.5, ca * 10.5, endY, sa * 10.5);
     for (let k = 0; k < 5; k++) {
       crown(ca * 10.5 + (rng() - 0.5) * 7, endY + (rng() - 0.3) * 4, sa * 10.5 + (rng() - 0.5) * 7, 7 + rng() * 3, 0.7);
@@ -962,23 +1086,27 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     const a = rng() * Math.PI * 2;
     crown(Math.cos(a) * r, TOP2 + 10.5 + rng() * 3.5, Math.sin(a) * r, 5.5 + rng() * 3, 0.7);
   }
+  t.flex(1);
   for (let i = 0; i < 18; i++) {            // fresh light-green leaves on top
     const r = Math.sqrt(rng()) * 11;
     const a = rng() * Math.PI * 2;
     t.ball(0x9bd65c, 3 + rng() * 1.5, Math.cos(a) * r, TOP2 + 17.5 + (1 - r / 11) * 4.5 + rng() * 1.5, Math.sin(a) * r, 0.7);
   }
+  t.flex(0);
 
   // ---------- Garland and lamps on the platform ----------
+  b.flex(0.15);                             // the garland flowers ruffle a little
   for (let i = 0; i < 44; i++) {            // marigold garland around the upper tier
     const a = (i / 44) * Math.PI * 2;
     b.dot(MARIGOLD[i % 4], 0.34, Math.cos(a) * 4.05, TOP2 + 0.14, Math.sin(a) * 4.05);
   }
+  b.flex(0);
   for (let i = 0; i < 14; i++) {            // clay lamps (diyas) around the lower tier
     const a = (i / 14) * Math.PI * 2 + 0.2;
     const x = Math.cos(a) * 4.6;
     const z = Math.sin(a) * 4.6;
     b.cyl(0xb5522b, 0.34, 0.1, x, SQUARE_TOP + 0.55, z);
-    f.cone(0xffd24a, 0.14, 0.3, x, SQUARE_TOP + 0.66, z);
+    flame(0.14, 0.3, x, SQUARE_TOP + 0.66, z);
   }
   [60, 90, 120].forEach((deg) => {          // three serpent stones painted with sindoor
     const a = (deg * Math.PI) / 180;
@@ -1072,10 +1200,12 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   b.ball(0xf4c542, 0.34 * K, X(-0.95), Y(1.5), Z(0.78), 0.9);
 
   // Marigold garland on his chest
+  b.flex(0.1);
   for (let i = 0; i <= 14; i++) {
     const a = -1.2 + (2.4 * i) / 14;
     b.dot(MARIGOLD[i % 4], 0.3 * K, X(0.8 * Math.sin(a)), Y(1.95 - 0.55 * Math.cos(a)), Z(0.5 + 0.6 * Math.cos(a)));
   }
+  b.flex(0);
 
   // His friend the little mouse
   const mx = sx - 1.9;
@@ -1090,14 +1220,18 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   // Marigold garland hanging between the front pillars, and a temple bell
   for (let i = 0; i <= 16; i++) {
     const t = i / 16;
+    b.flex(0.8 * Math.sin(Math.PI * t));   // the garland is tied at both ends, so the middle swings the most
     b.dot(MARIGOLD[i % 4], 0.3, sx - 2.8 + 5.6 * t, SL + PH - 0.2 - 0.7 * Math.sin(Math.PI * t), sz + 2.1);
   }
+  b.flexDown(SL + PH, SL + PH - 1.35, 1);  // the bell hangs from its rope: fixed at the top, swings at the bottom
   b.cyl(0x5a3a22, 0.05, 0.7, sx, SL + PH - 0.7, sz + 2.1);
   b.cone(GOLD, 0.7, 0.55, sx, SL + PH - 1.25, sz + 2.1);
   b.ball(0x8a6a1a, 0.18, sx, SL + PH - 1.28, sz + 2.1);
+  b.flex(0.1);
   for (let i = 0; i <= 12; i++) {                                   // garland on the front of the seat
     b.dot(MARIGOLD[i % 4], 0.3, sx - 1.5 + (3 * i) / 12, SL + 1.1, IZ + 1.25);
   }
+  b.flex(0);
 
   // ---------- Offerings ----------
   // Brass plate with sweet modaks, red hibiscus and durva grass
@@ -1108,12 +1242,16 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     b.dot(0xd62828, 0.22, Math.cos(a) * 0.65, SL + 0.1, 10.6 + Math.sin(a) * 0.65);
   }
   b.ball(0xf4c542, 0.34, 0, SL + 0.38, 10.6, 0.9);
+  b.flexUp(SL + 0.15, SL + 0.55, 0.9);       // durva grass blades wave at their tips
   for (let i = 0; i < 6; i++) {
     b.cylRot(0x3f9a3a, 0.04, 0.5, 0.5 + i * 0.03, SL + 0.3, 10.2 + i * 0.03, 0.2, 0, -0.3 + i * 0.12);
   }
+  b.flex(0);
 
   // Bananas on a banana leaf
+  b.flex(0.25);                              // the banana leaf stirs a little
   b.ellip(0x3f9a3a, 1.2, 0.05, 0.8, -1.7, SL + 0.03, 10.6);
+  b.flex(0);
   for (let i = 0; i < 6; i++) {
     b.cylRot(0xf2d544, 0.17, 0.65, -1.7 + (i - 2.5) * 0.14, SL + 0.38, 10.6, 0, 0, (i - 2.5) * 0.12);
   }
@@ -1136,7 +1274,7 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     [-1, 1].forEach((sd) => {
       const lx = sd * (0.95 + i * 0.45);
       b.cyl(0xb5522b, 0.38, 0.12, lx, SL, 11.2);
-      f.cone(0xffd24a, 0.16, 0.34, lx, SL + 0.12, 11.2);
+      flame(0.16, 0.34, lx, SL + 0.12, 11.2);
     });
   }
   [-1, 1].forEach((sd) => {
@@ -1144,7 +1282,7 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     b.cyl(GOLD, 0.45, 0.08, lx, SL, 11.0);
     b.cyl(GOLD, 0.12, 0.8, lx, SL + 0.08, 11.0);
     b.cyl(GOLD, 0.5, 0.1, lx, SL + 0.88, 11.0);
-    f.cone(0xffd24a, 0.2, 0.42, lx, SL + 0.98, 11.0);
+    flame(0.2, 0.42, lx, SL + 0.98, 11.0);
   });
 
   // Incense sticks
@@ -1159,14 +1297,17 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   b.ball(0xb87333, 0.75, 2.3, SL + 0.4, 9.95);
   b.cyl(0xb87333, 0.35, 0.2, 2.3, SL + 0.72, 9.95);
   b.cyl(0xb87333, 0.5, 0.06, 2.3, SL + 0.9, 9.95);
+  b.flexUp(SL + 0.9, SL + 1.4, 0.9);         // mango leaves flutter at their tips
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2;
     b.ellip(0x3f9a3a, 0.12, 0.5, 0.2, 2.3 + Math.cos(a) * 0.22, SL + 1.15, 9.95 + Math.sin(a) * 0.22, Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
   }
+  b.flex(0);
   b.ball(0x6b4a2b, 0.38, 2.3, SL + 1.2, 9.95);
   b.cyl(0xc62828, 0.4, 0.1, 2.3, SL + 0.95, 9.95);
 
-  // Heap of marigold flowers, and scattered petals
+  // Heap of marigold flowers, and scattered petals (light, so they flutter in a gust)
+  b.flex(0.3);
   for (let i = 0; i < 26; i++) {
     const a = rng() * Math.PI * 2;
     const r = Math.sqrt(rng()) * 0.5;
@@ -1179,6 +1320,7 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   for (let i = 0; i < 40; i++) {                                    // petals on the plaza floor in front
     b.dot(petals[i % 5], 0.18, sx + (rng() - 0.5) * 6, SQUARE_TOP + 0.04, sz + 3.0 + rng() * 1.6);
   }
+  b.flex(0);
 
   // Rangoli (coloured floor art) in front of the shrine
   const RX = sx;
@@ -1192,35 +1334,36 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   b.cyl(0xffffff, 0.6, 0.08, RX, SQUARE_TOP, RZ);
 
   // ---------- Put it in the world ----------
-  const stoneMesh = new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true }));
+  // The shrine stone is stiff, but its garlands, bell, petals and leaves move in the wind.
+  const stoneMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+  addFlexSway(stoneMaterial, 'shrine', 0.3, 0.3, 0.08);
+  const stoneMesh = new THREE.Mesh(b.build(), stoneMaterial);
   stoneMesh.frustumCulled = false;
   scene.add(stoneMesh);
 
   // The Peepal tree sways with the wind: the higher a part is, the more it moves,
   // and during a breeze the leaves flutter and the branches shake.
   const treeMaterial2 = new THREE.MeshLambertMaterial({ vertexColors: true });
+  treeMaterial2.customProgramCacheKey = () => 'peepal';
   treeMaterial2.onBeforeCompile = (shader) => {
     shader.uniforms.uWind = windUniform;
     shader.uniforms.uStrength = breeze;
+    shader.uniforms.uWindDir = windDirUniform;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+      .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uStrength;\nuniform vec2 uWindDir;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>
   float hg = max(position.y - 1.25, 0.0);
   float lean = hg * hg;
   float shk = max(uStrength - 1.0, 0.0);
   transformed.x += (sin(uWind * 0.9) * 0.0006 * uStrength + sin(uWind * 5.7) * 0.00022 * shk) * lean;
   transformed.z += (cos(uWind * 0.7) * 0.00045 * uStrength + cos(uWind * 4.9) * 0.00018 * shk) * lean;
-  float leafy = smoothstep(9.0, 16.0, position.y);
-  float ph = position.x * 0.9 + position.z * 0.7;
-  transformed.x += sin(uWind * 7.0 + ph) * 0.10 * shk * leafy;
-  transformed.y += sin(uWind * 6.0 + ph * 1.3) * 0.07 * shk * leafy;
-  transformed.z += cos(uWind * 6.5 + ph) * 0.10 * shk * leafy;`);
+  ${flexSwayGLSL('0.5', '0.45', '0.12')}   // each branch swings and each leaf rustles on its own`);
   };
   const peepalMesh = new THREE.Mesh(t.build(), treeMaterial2);
   peepalMesh.frustumCulled = false;
   scene.add(peepalMesh);
 
-  const flameMesh = new THREE.Mesh(f.build(), new THREE.MeshBasicMaterial({ vertexColors: true }));
+  const flameMesh = new THREE.Mesh(f.build(), makeFlameMaterial());
   flameMesh.frustumCulled = false;
   scene.add(flameMesh);
 
@@ -1575,9 +1718,11 @@ const treeWindStrength = breeze;
 // ---------- Three tree shapes (each one is ONE merged shape) ----------
 const TRUNK = 0x8a5a3a;
 
+// (b.flex(1) = "the leaves move freely in the wind". The trunk is added first and stays stiff.)
 function buildRoundTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.9, 2.8, 0, 0, 0);
+  b.flex(1);
   b.ball(0x5fb04f, 5.2, 0, 4.4, 0, 0.9);
   b.ball(0x6cbc58, 3.6, 1.6, 5.2, 0.6, 0.9);
   b.ball(0x56a548, 3.4, -1.5, 4.9, -0.8, 0.9);
@@ -1587,6 +1732,7 @@ function buildRoundTree() {
 function buildTallTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.8, 3.6, 0, 0, 0);
+  b.flex(1);
   b.ball(0x4f9e4a, 4.2, 0, 6.4, 0, 1.55);
   b.ball(0x5dae52, 3.0, 0.3, 8.6, 0.2, 1.2);
   return b.build();
@@ -1595,10 +1741,12 @@ function buildTallTree() {
 function buildPineTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.7, 2.2, 0, 0, 0);
-  b.cone(0x3f8f5a, 5.6, 3.0, 0, 1.6, 0);
-  b.cone(0x479c60, 4.5, 2.8, 0, 3.6, 0);
-  b.cone(0x4fa668, 3.4, 2.6, 0, 5.5, 0);
-  b.cone(0x58b06f, 2.0, 1.8, 0, 7.3, 0);
+  // Each layer of needles moves most at its tip, so the branches seem to wave.
+  [[0x3f8f5a, 5.6, 3.0, 1.6], [0x479c60, 4.5, 2.8, 3.6], [0x4fa668, 3.4, 2.6, 5.5], [0x58b06f, 2.0, 1.8, 7.3]]
+    .forEach(([color, dia, h, y]) => {
+      b.flexUp(y, y + h, 0.9);
+      b.cone(color, dia, h, 0, y, 0);
+    });
   return b.build();
 }
 
@@ -1607,8 +1755,9 @@ const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
 treeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uWind = windUniform;
   shader.uniforms.uStrength = treeWindStrength;
+  shader.uniforms.uWindDir = windDirUniform;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+    .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uStrength;\nuniform vec2 uWindDir;')
     .replace('#include <begin_vertex>', `#include <begin_vertex>
 #ifdef USE_INSTANCING
   float sX = length(instanceMatrix[0].xyz);
@@ -1620,8 +1769,10 @@ treeMaterial.onBeforeCompile = (shader) => {
   float shake = max(uStrength - 1.0, 0.0);
   transformed.x += sin(uWind * 6.3 + phase * 2.0) * 0.0005 * shake * hgt * hgt / sX;
   transformed.z += cos(uWind * 5.1 + phase * 1.7) * 0.0004 * shake * hgt * hgt / sX;
+  ${flexSwayGLSL('0.25', '0.25', '0.07')}   // branches swing and leaves rustle
 #endif`);
 };
+treeMaterial.customProgramCacheKey = () => 'tree';
 
 // ---------- Rules: where a tree is NOT allowed ----------
 function distToSegment(px, pz, ax, az, bx, bz) {
