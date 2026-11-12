@@ -204,101 +204,12 @@ function riverX(z) {
   return 140 + 35 * Math.sin(z * 0.008);
 }
 
-// A clock for everything that sways in the wind (reeds, trees).
-// It runs a little faster during a gust (see section 6g, THE BREEZE).
+// A clock for everything that sways in the wind (reeds, trees, and the breeze later).
 const windUniform = { value: 0 };
 
-// The breeze: gustUniform is 0 in calm air and goes up to 1 in the strongest gust.
-// windDirUniform is the direction the wind blows TOWARD, on the ground (x, z).
-const gustUniform = { value: 0 };
-const windDirUniform = { value: new THREE.Vector2(0.8, 0.6).normalize() };
-
-// Shader code shared by trees and reeds: during a gust they lean along the wind direction,
-// and the gust "rolls" across the land as a wave instead of hitting everything at once.
-// "leanAmount" is how far (in metres, at 1 m tall squared) a gust bends them.
-function gustLeanGLSL(leanAmount) {
-  return `
-  float sZ = length(instanceMatrix[2].xyz);
-  vec3 axisX = instanceMatrix[0].xyz / sX;
-  vec3 axisZ = instanceMatrix[2].xyz / sZ;
-  vec3 worldDir = vec3(uWindDir.x, 0.0, uWindDir.y);
-  vec2 localDir = vec2(dot(axisX, worldDir), dot(axisZ, worldDir));
-  float front = 0.75 + 0.25 * sin(dot(instanceMatrix[3].xz, uWindDir) * 0.03 - uWind * 1.6);
-  float lean = uGust * front * ${leanAmount} * hgt * hgt / sX;
-  transformed.x += localDir.x * lean;
-  transformed.z += localDir.y * lean;`;
-}
-
-// Shader code for LIGHT things (leaves, branch tips, flowers, garlands, petals, a hanging bell).
-// Every point has a "flex" number (see makeBuilder): 0 = stays still, 1 = moves freely.
-// In a gust a flexible point is pushed along the wind, swings slowly (whole branches and stems
-// moving), and rustles quickly (single leaves). Even in still air it stirs a tiny bit.
-//   lean   : how far (m) a gust pushes it downwind
-//   swing  : how far (m) it swings slowly
-//   rustle : how far (m) it shakes quickly
-function flexSwayGLSL(lean, swing, rustle) {
-  return `
-  if (flex > 0.001) {
-    #ifdef USE_INSTANCING
-      vec3 fwp = (instanceMatrix * vec4(position, 1.0)).xyz;
-    #else
-      vec3 fwp = position;
-    #endif
-    float fg = 0.15 + uGust;
-    float slowA = sin(uWind * 2.1 + fwp.x * 0.8 + fwp.z * 0.6);
-    float slowB = cos(uWind * 1.7 + fwp.z * 0.9 - fwp.x * 0.5);
-    float fastA = sin(uWind * 9.0 + fwp.x * 4.1 + fwp.y * 3.3 + fwp.z * 2.7);
-    float fastB = cos(uWind * 11.0 + fwp.x * 3.1 - fwp.y * 4.3 + fwp.z * 3.7);
-    vec3 push = vec3(uWindDir.x, 0.0, uWindDir.y) * (uGust * ${lean} * (0.7 + 0.3 * slowA));
-    vec3 off = push + vec3(slowA * ${swing} * fg, 0.0, slowB * ${swing} * fg);
-    off += vec3(fastA, 0.5 * fastB, fastB) * ${rustle} * fg;
-    off *= flex;
-    #ifdef USE_INSTANCING
-      vec3 fsc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
-      vec3 fax = instanceMatrix[0].xyz / fsc.x;
-      vec3 fay = instanceMatrix[1].xyz / fsc.y;
-      vec3 faz = instanceMatrix[2].xyz / fsc.z;
-      off = vec3(dot(fax, off) / fsc.x, dot(fay, off) / fsc.y, dot(faz, off) / fsc.z);
-    #endif
-    transformed += off;
-  }`;
-}
-
-// Gives a material the flexible-things wind. "name" must be different for every different setting.
-function addFlexSway(material, name, lean, swing, rustle) {
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uWind = windUniform;
-    shader.uniforms.uGust = gustUniform;
-    shader.uniforms.uWindDir = windDirUniform;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uGust;\nuniform vec2 uWindDir;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + flexSwayGLSL(lean, swing, rustle));
-  };
-  material.customProgramCacheKey = () => name;
-}
-
-// Flames flicker all the time and lean away from the wind. A gust makes them dance (and lean a lot).
-function makeFlameMaterial() {
-  const material = new THREE.MeshBasicMaterial({ vertexColors: true });
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uWind = windUniform;
-    shader.uniforms.uGust = gustUniform;
-    shader.uniforms.uWindDir = windDirUniform;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uGust;\nuniform vec2 uWindDir;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-  float flick = 0.012 + 0.035 * uGust;
-  float fx = sin(uWind * 25.0 + position.x * 40.0 + position.z * 31.0) + 0.6 * sin(uWind * 41.0 + position.z * 50.0);
-  float fz = cos(uWind * 29.0 + position.x * 37.0) + 0.6 * cos(uWind * 47.0 + position.x * 23.0);
-  vec3 offFlame = vec3(
-    uWindDir.x * uGust * 0.16 + fx * flick,
-    -uGust * 0.05,
-    uWindDir.y * uGust * 0.16 + fz * flick);
-  transformed += offFlame * flex;`);
-  };
-  material.customProgramCacheKey = () => 'flame';
-  return material;
-}
+// How strong the wind is right now. 1 = calm. During a breeze it rises (see updateBreeze)
+// and the trees, branches and reeds lean and shake more.
+const breeze = { value: 1 };
 
 // Soft ripple streaks that tile without seams. They are stretched along the flow direction.
 function makeWaterTexture() {
@@ -502,6 +413,7 @@ for (let gz = GRID_MIN_Z; gz <= GRID_MAX_Z; gz++) {
       z,
       facing: Math.atan2(faceX, faceZ),
       ownerId: null,
+      number: PLOTS.length + 1,    // the house number shown to players (1, 2, 3...)
       house: HOUSE_STYLES[Math.floor(styleRng() * HOUSE_STYLES.length)]
     };
     PLOTS.push(plot);
@@ -571,23 +483,6 @@ function makeBuilder() {
   const s = new THREE.Vector3();
   const c = new THREE.Color();
 
-  // "Flex" says how freely each part moves in the wind: 0 = stiff (stone, walls, wood),
-  // 1 = moves freely (leaves, flowers, garlands, flames). Every point of a part gets its own number.
-  //   flex(v)              : the whole part has the same flex v
-  //   flexUp(yBase, yTip)  : flex grows from 0 at yBase to v at yTip (flower stems, flames, branch tips)
-  //   flexDown(yTop, yBot) : flex grows from 0 at yTop to v at yBot (hanging things: bells, ropes)
-  // The setting stays on for every part added after it, so call flex(0) to turn it off again.
-  const flex = [];
-  let flexMode = 0;      // 0 = same everywhere, 1 = grows upwards, 2 = grows downwards
-  let flexValue = 0;
-  let flexA = 0;
-  let flexB = 1;
-  const flexAt = (y) => {
-    if (flexMode === 0) return flexValue;
-    const t = flexMode === 1 ? (y - flexA) / (flexB - flexA) : (flexA - y) / (flexA - flexB);
-    return flexValue * Math.max(0, Math.min(1, t));
-  };
-
   // Adds one part: shape, colour, centre position, size, rotation.
   function add(geo, color, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) {
     if (liteMode) {
@@ -611,19 +506,11 @@ function makeBuilder() {
       pos.push(pa[i]);
       nor.push(na[i]);
     }
-    for (let i = 0; i < pa.length / 3; i++) {
-      col.push(c.r, c.g, c.b);
-      flex.push(flexAt(pa[i * 3 + 1]));
-    }
+    for (let i = 0; i < pa.length / 3; i++) col.push(c.r, c.g, c.b);
     g.dispose();
   }
 
   return {
-    // Wind flexibility for the parts added after these calls (see the note above).
-    flex(v) { flexMode = 0; flexValue = v; },
-    flexUp(yBase, yTip, v = 1) { flexMode = 1; flexValue = v; flexA = yBase; flexB = yTip; },
-    flexDown(yTop, yBot, v = 1) { flexMode = 2; flexValue = v; flexA = yTop; flexB = yBot; },
-
     // For these, (x, y, z) is the middle of the BOTTOM of the part.
     box(color, w, h, d, x, y, z) { add(U_BOX, color, x, y + h / 2, z, w, h, d); },
     cyl(color, dia, h, x, y, z) { add(U_CYL, color, x, y + h / 2, z, dia, h, dia); },
@@ -644,7 +531,6 @@ function makeBuilder() {
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-      g.setAttribute('flex', new THREE.Float32BufferAttribute(flex, 1));
       return g;
     }
   };
@@ -714,22 +600,18 @@ function flowerBed(b, x, z, w, d) {
   b.box(0x7a5237, w, 0.18, d, x, G, z);
   if (liteMode) return;
   const n = Math.round(w * d * 0.9);
-  b.flexUp(G + 0.15, G + 0.95, 0.9);   // flowers nod in the wind: the stem barely, the flower head most
   for (let i = 0; i < n; i++) {
     const fx = x + (Math.random() - 0.5) * (w - 0.6);
     const fz = z + (Math.random() - 0.5) * (d - 0.6);
     b.dot(0x5fae4e, 0.45, fx, G + 0.38, fz);
     b.dot(FLOWER_COLORS[i % FLOWER_COLORS.length], 0.42, fx, G + 0.7, fz);
   }
-  b.flex(0);
 }
 
 // A round bush.
 function bush(b, x, z, size = 1.9) {
   if (liteMode) return;
-  b.flex(0.5);   // the leaves of a bush ruffle in the wind
   b.ball(LEAF, size, x, G + size * 0.42, z, 0.85);
-  b.flex(0);
 }
 
 // ---------- STYLE 1: COTTAGE (round, warm, thatched) ----------
@@ -785,13 +667,11 @@ function buildTreehouse() {
 
   // Leafy crown around the cabin (not in front, so the door stays visible)
   const leafColors = [0x6dbb5a, 0x58a84d, 0x7fc968];
-  b.flex(1);   // the leaves shake in the wind
   [0, 180, 215, 250, 290, 325].forEach((deg, i) => {
     const a = (deg * Math.PI) / 180;
     b.ball(leafColors[i % 3], 4.4, Math.cos(a) * 4.3, G + 7.2 + (i % 2) * 0.8, -4.5 + Math.sin(a) * 4.3, 0.85);
   });
   b.ball(0x58a84d, 4.5, 0, G + 10.2, -6.2, 0.85);
-  b.flex(0);
 
   // Ladder up to the platform
   b.box(0xa8764a, 0.14, 5.4, 0.14, -0.5, G, -0.35);
@@ -902,9 +782,7 @@ function buildTraditional() {
   [-3.2, 3.2].forEach((x) => {
     frontWindow(b, x, G + 1.3, Zf, 1.3, 1.5, WHITE, GLASS);
     b.box(WOOD_DARK, 1.8, 0.3, 0.45, x, G + 0.75, Zf + 0.3);
-    b.flex(0.4);   // window-box flowers nod in the wind
     [-0.5, 0, 0.5].forEach((o, i) => b.dot(FLOWER_COLORS[i], 0.4, x + o, G + 1.15, Zf + 0.3));
-    b.flex(0);
   });
   b.cylZ(WHITE, 1.6, 0.16, 0, G + wallH + 1.05, Zf + 0.04); // round attic window
   b.cylZ(GLASS, 1.25, 0.2, 0, G + wallH + 1.05, Zf + 0.04);
@@ -923,7 +801,6 @@ function buildTraditional() {
 
 // ---------- Build each house twice: DETAILED (near you) and LITE (far away) ----------
 const houseMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
-addFlexSway(houseMaterial, 'house', 0.2, 0.15, 0.05);   // garden flowers, bushes and treehouse leaves move in the wind
 const houseBuilders = {
   cottage: buildCottage,
   treehouse: buildTreehouse,
@@ -1014,29 +891,23 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   const rng = makeRng(4242);
   const b = makeBuilder();               // stone, wood, leaves, flowers
   const f = makeBuilder();               // flames (drawn bright, never dark)
-
-  // One lamp flame. It is fixed at the bottom and flickers and leans more towards the tip.
-  function flame(dia, h, x, y, z) {
-    f.flexUp(y, y + h, 1);
-    f.cone(0xffd24a, dia, h, x, y, z);
-  }
+  const t = makeBuilder();               // the Peepal tree itself (this part sways in the wind)
 
   // A thin part pointing from one point to another (branches, arms, roots).
   const upAxis = new THREE.Vector3(0, 1, 0);
   const dirVec = new THREE.Vector3();
   const quat = new THREE.Quaternion();
   const euler = new THREE.Euler();
-  // sway > 0 makes the branch move in the wind, more and more towards its tip.
-  function limb(color, dia, x1, y1, z1, x2, y2, z2, sway = 0) {
-    if (sway > 0) b.flexUp(Math.min(y1, y2), Math.max(y1, y2), sway);
-    else b.flex(0);
+  function limbOn(target, color, dia, x1, y1, z1, x2, y2, z2) {
     dirVec.set(x2 - x1, y2 - y1, z2 - z1);
     const len = dirVec.length();
     dirVec.normalize();
     quat.setFromUnitVectors(upAxis, dirVec);
     euler.setFromQuaternion(quat, 'XYZ');
-    b.cylRot(color, dia, len, (x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2, euler.x, euler.y, euler.z);
+    target.cylRot(color, dia, len, (x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2, euler.x, euler.y, euler.z);
   }
+  const limb = (...a) => limbOn(b, ...a);       // part of the shrine and idol
+  const treeLimb = (...a) => limbOn(t, ...a);   // part of the tree
 
   const GOLD = 0xe0a82e;
   const MARIGOLD = [0xff9f1c, 0xffc300, 0xff7a00, 0xffd93b];
@@ -1050,28 +921,24 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   const TOP2 = SQUARE_TOP + 0.95;                                           // top of the platform
 
   // ---------- The big Peepal (sacred fig / Bodhi) tree ----------
-  b.cyl(WOOD_DK, 4.6, 1.2, 0, TOP2, 0);                  // wide root base
-  b.cyl(WOOD, 3.0, 9.2, 0, TOP2 + 1.1, 0);               // thick trunk
+  t.cyl(WOOD_DK, 4.6, 1.2, 0, TOP2, 0);                  // wide root base
+  t.cyl(WOOD, 3.0, 9.2, 0, TOP2 + 1.1, 0);               // thick trunk
 
   // Roots spreading over the platform
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2 + rng() * 0.3;
-    limb(WOOD_DK, 0.9, Math.cos(a) * 1.0, TOP2 + 2.3, Math.sin(a) * 1.0, Math.cos(a) * 3.3, TOP2, Math.sin(a) * 3.3);
+    treeLimb(WOOD_DK, 0.9, Math.cos(a) * 1.0, TOP2 + 2.3, Math.sin(a) * 1.0, Math.cos(a) * 3.3, TOP2, Math.sin(a) * 3.3);
   }
 
   // Sacred threads and a saffron cloth tied around the trunk
-  b.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.0, 0);
-  b.cyl(0xffc107, 3.12, 0.1, 0, TOP2 + 2.25, 0);
-  b.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.5, 0);
-  b.cyl(0xff8f00, 3.2, 0.55, 0, TOP2 + 3.3, 0);
+  t.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.0, 0);
+  t.cyl(0xffc107, 3.12, 0.1, 0, TOP2 + 2.25, 0);
+  t.cyl(0xc62828, 3.12, 0.14, 0, TOP2 + 2.5, 0);
+  t.cyl(0xff8f00, 3.2, 0.55, 0, TOP2 + 3.3, 0);
 
   // Big spreading branches and the leafy crown
   const greens = [0x4f9b3a, 0x5fae3f, 0x6dbb48, 0x7ec850, 0x429134];
-  // Every leafy ball of the crown is fully flexible, so the whole crown shakes and rustles in a gust.
-  const crown = (x, y, z, dia, squash) => {
-    b.flex(1);
-    b.ball(greens[Math.floor(rng() * greens.length)], dia, x, y, z, squash);
-  };
+  const crown = (x, y, z, dia, squash) => t.ball(greens[Math.floor(rng() * greens.length)], dia, x, y, z, squash);
 
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + rng() * 0.4;
@@ -1079,8 +946,8 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     const sa = Math.sin(a);
     const midY = TOP2 + 12 + rng() * 1.5;
     const endY = TOP2 + 14.2 + rng() * 2;
-    limb(WOOD, 1.3, ca * 0.6, TOP2 + 9.0 + rng() * 1.2, sa * 0.6, ca * 5.5, midY, sa * 5.5, 0.25);
-    limb(WOOD, 0.8, ca * 5.5, midY, sa * 5.5, ca * 10.5, endY, sa * 10.5, 0.8);
+    treeLimb(WOOD, 1.3, ca * 0.6, TOP2 + 9.0 + rng() * 1.2, sa * 0.6, ca * 5.5, midY, sa * 5.5);
+    treeLimb(WOOD, 0.8, ca * 5.5, midY, sa * 5.5, ca * 10.5, endY, sa * 10.5);
     for (let k = 0; k < 5; k++) {
       crown(ca * 10.5 + (rng() - 0.5) * 7, endY + (rng() - 0.3) * 4, sa * 10.5 + (rng() - 0.5) * 7, 7 + rng() * 3, 0.7);
     }
@@ -1095,27 +962,23 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
     const a = rng() * Math.PI * 2;
     crown(Math.cos(a) * r, TOP2 + 10.5 + rng() * 3.5, Math.sin(a) * r, 5.5 + rng() * 3, 0.7);
   }
-  b.flex(1);
   for (let i = 0; i < 18; i++) {            // fresh light-green leaves on top
     const r = Math.sqrt(rng()) * 11;
     const a = rng() * Math.PI * 2;
-    b.ball(0x9bd65c, 3 + rng() * 1.5, Math.cos(a) * r, TOP2 + 17.5 + (1 - r / 11) * 4.5 + rng() * 1.5, Math.sin(a) * r, 0.7);
+    t.ball(0x9bd65c, 3 + rng() * 1.5, Math.cos(a) * r, TOP2 + 17.5 + (1 - r / 11) * 4.5 + rng() * 1.5, Math.sin(a) * r, 0.7);
   }
-  b.flex(0);
 
   // ---------- Garland and lamps on the platform ----------
-  b.flex(0.15);                             // the garland flowers ruffle a little
   for (let i = 0; i < 44; i++) {            // marigold garland around the upper tier
     const a = (i / 44) * Math.PI * 2;
     b.dot(MARIGOLD[i % 4], 0.34, Math.cos(a) * 4.05, TOP2 + 0.14, Math.sin(a) * 4.05);
   }
-  b.flex(0);
   for (let i = 0; i < 14; i++) {            // clay lamps (diyas) around the lower tier
     const a = (i / 14) * Math.PI * 2 + 0.2;
     const x = Math.cos(a) * 4.6;
     const z = Math.sin(a) * 4.6;
     b.cyl(0xb5522b, 0.34, 0.1, x, SQUARE_TOP + 0.55, z);
-    flame(0.14, 0.3, x, SQUARE_TOP + 0.66, z);
+    f.cone(0xffd24a, 0.14, 0.3, x, SQUARE_TOP + 0.66, z);
   }
   [60, 90, 120].forEach((deg) => {          // three serpent stones painted with sindoor
     const a = (deg * Math.PI) / 180;
@@ -1332,6 +1195,30 @@ const SHRINE = { x: 0, z: 9.2 };        // the little shrine, in front of the tr
   const stoneMesh = new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true }));
   stoneMesh.frustumCulled = false;
   scene.add(stoneMesh);
+
+  // The Peepal tree sways with the wind: the higher a part is, the more it moves,
+  // and during a breeze the leaves flutter and the branches shake.
+  const treeMaterial2 = new THREE.MeshLambertMaterial({ vertexColors: true });
+  treeMaterial2.onBeforeCompile = (shader) => {
+    shader.uniforms.uWind = windUniform;
+    shader.uniforms.uStrength = breeze;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+  float hg = max(position.y - 1.25, 0.0);
+  float lean = hg * hg;
+  float shk = max(uStrength - 1.0, 0.0);
+  transformed.x += (sin(uWind * 0.9) * 0.0006 * uStrength + sin(uWind * 5.7) * 0.00022 * shk) * lean;
+  transformed.z += (cos(uWind * 0.7) * 0.00045 * uStrength + cos(uWind * 4.9) * 0.00018 * shk) * lean;
+  float leafy = smoothstep(9.0, 16.0, position.y);
+  float ph = position.x * 0.9 + position.z * 0.7;
+  transformed.x += sin(uWind * 7.0 + ph) * 0.10 * shk * leafy;
+  transformed.y += sin(uWind * 6.0 + ph * 1.3) * 0.07 * shk * leafy;
+  transformed.z += cos(uWind * 6.5 + ph) * 0.10 * shk * leafy;`);
+  };
+  const peepalMesh = new THREE.Mesh(t.build(), treeMaterial2);
+  peepalMesh.frustumCulled = false;
+  scene.add(peepalMesh);
 
   const flameMesh = new THREE.Mesh(f.build(), new THREE.MeshBasicMaterial({ vertexColors: true }));
   flameMesh.frustumCulled = false;
@@ -1619,20 +1506,18 @@ reedGeometry.translate(0, 0.5, 0); // the bottom of each blade sits at y = 0
 const reedMaterial = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
 reedMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uWind = windUniform;
-  shader.uniforms.uGust = gustUniform;
-  shader.uniforms.uWindDir = windDirUniform;
+  shader.uniforms.uStrength = breeze;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uGust;\nuniform vec2 uWindDir;')
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
     .replace('#include <begin_vertex>', `#include <begin_vertex>
 #ifdef USE_INSTANCING
   float sX = length(instanceMatrix[0].xyz);
   float sY = length(instanceMatrix[1].xyz);
   float hgt = position.y * sY;
   float phase = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.29;
-  float flutter = 1.0 + uGust * 1.5;   // blades shake more in a gust
-  transformed.x += sin(uWind * 1.7 + phase) * 0.035 * flutter * hgt * hgt / sX;
-  transformed.z += cos(uWind * 1.3 + phase) * 0.025 * flutter * hgt * hgt / sX;
-  ${gustLeanGLSL('0.07')}
+  float gustPush = 1.0 + (uStrength - 1.0) * 0.4;
+  transformed.x += sin(uWind * 1.7 + phase) * 0.035 * gustPush * hgt * hgt / sX;
+  transformed.z += cos(uWind * 1.3 + phase) * 0.025 * gustPush * hgt * hgt / sX;
 #endif`);
 };
 
@@ -1684,17 +1569,15 @@ const GROVE_COUNT = 80;       // number of small forests
 const SINGLE_TREES = 150;     // trees standing alone
 const treeRng = makeRng(777); // fixed seed: the trees are in the same places every visit
 
-// How much the trees sway. The breeze (section 6g) raises this number during a gust.
-const treeWindStrength = { value: 1 };
+// For later phases (the air breeze can raise this number to make trees sway more).
+const treeWindStrength = breeze;
 
 // ---------- Three tree shapes (each one is ONE merged shape) ----------
 const TRUNK = 0x8a5a3a;
 
-// (b.flex(1) = "the leaves move freely in the wind". The trunk is added first and stays stiff.)
 function buildRoundTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.9, 2.8, 0, 0, 0);
-  b.flex(1);
   b.ball(0x5fb04f, 5.2, 0, 4.4, 0, 0.9);
   b.ball(0x6cbc58, 3.6, 1.6, 5.2, 0.6, 0.9);
   b.ball(0x56a548, 3.4, -1.5, 4.9, -0.8, 0.9);
@@ -1704,7 +1587,6 @@ function buildRoundTree() {
 function buildTallTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.8, 3.6, 0, 0, 0);
-  b.flex(1);
   b.ball(0x4f9e4a, 4.2, 0, 6.4, 0, 1.55);
   b.ball(0x5dae52, 3.0, 0.3, 8.6, 0.2, 1.2);
   return b.build();
@@ -1713,12 +1595,10 @@ function buildTallTree() {
 function buildPineTree() {
   const b = makeBuilder();
   b.cyl(TRUNK, 0.7, 2.2, 0, 0, 0);
-  // Each layer of needles moves most at its tip, so the branches seem to wave.
-  [[0x3f8f5a, 5.6, 3.0, 1.6], [0x479c60, 4.5, 2.8, 3.6], [0x4fa668, 3.4, 2.6, 5.5], [0x58b06f, 2.0, 1.8, 7.3]]
-    .forEach(([color, dia, h, y]) => {
-      b.flexUp(y, y + h, 0.9);
-      b.cone(color, dia, h, 0, y, 0);
-    });
+  b.cone(0x3f8f5a, 5.6, 3.0, 0, 1.6, 0);
+  b.cone(0x479c60, 4.5, 2.8, 0, 3.6, 0);
+  b.cone(0x4fa668, 3.4, 2.6, 0, 5.5, 0);
+  b.cone(0x58b06f, 2.0, 1.8, 0, 7.3, 0);
   return b.build();
 }
 
@@ -1727,10 +1607,8 @@ const treeMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
 treeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uWind = windUniform;
   shader.uniforms.uStrength = treeWindStrength;
-  shader.uniforms.uGust = gustUniform;
-  shader.uniforms.uWindDir = windDirUniform;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute float flex;\nuniform float uWind;\nuniform float uStrength;\nuniform float uGust;\nuniform vec2 uWindDir;')
+    .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform float uStrength;')
     .replace('#include <begin_vertex>', `#include <begin_vertex>
 #ifdef USE_INSTANCING
   float sX = length(instanceMatrix[0].xyz);
@@ -1739,11 +1617,11 @@ treeMaterial.onBeforeCompile = (shader) => {
   float phase = instanceMatrix[3].x * 0.21 + instanceMatrix[3].z * 0.17;
   transformed.x += sin(uWind * 1.1 + phase) * 0.0018 * uStrength * hgt * hgt / sX;
   transformed.z += cos(uWind * 0.9 + phase) * 0.0013 * uStrength * hgt * hgt / sX;
-  ${gustLeanGLSL('0.0045')}
-  ${flexSwayGLSL('0.25', '0.25', '0.07')}   // branches swing and leaves rustle
+  float shake = max(uStrength - 1.0, 0.0);
+  transformed.x += sin(uWind * 6.3 + phase * 2.0) * 0.0005 * shake * hgt * hgt / sX;
+  transformed.z += cos(uWind * 5.1 + phase * 1.7) * 0.0004 * shake * hgt * hgt / sX;
 #endif`);
 };
-treeMaterial.customProgramCacheKey = () => 'tree';
 
 // ---------- Rules: where a tree is NOT allowed ----------
 function distToSegment(px, pz, ax, az, bx, bz) {
@@ -2160,8 +2038,11 @@ const FENCE_BOXES = [
   [11, 2.5, 0.3, 17, 1.0]       // right fence
 ];
 
+// The two wooden posts of the house sign board, in front of the gate.
+const SIGN_POSTS = [[2.0, 11.9, 0.07, 2.9], [4.4, 11.9, 0.07, 2.9]];
+
 function gardenWith(roundThings, beds) {
-  return { round: roundThings, boxes: FENCE_BOXES.concat(beds) };
+  return { round: roundThings.concat(SIGN_POSTS), boxes: FENCE_BOXES.concat(beds) };
 }
 
 const GARDEN = {
@@ -2178,7 +2059,7 @@ const GARDEN = {
     [[-5.5, 5.5, 3.6, 2.2, 0.8], [5.5, 5.5, 3.6, 2.2, 0.8]]
   ),
   modern: {
-    round: [[-1.4, 0.9, 0.7, 2.0], [3.0, 0.9, 0.7, 2.0], [6.5, 5, 0.3, 2.2]],   // planters and the small tree
+    round: [[-1.4, 0.9, 0.7, 2.0], [3.0, 0.9, 0.7, 2.0], [6.5, 5, 0.3, 2.2]].concat(SIGN_POSTS),   // planters, the small tree and the sign posts
     boxes: [                                                                    // the hedges
       [-5.7, 10.6, 10.6, 1.1, 1.0],
       [6.5, 10.6, 9.0, 1.1, 1.0],
@@ -2410,7 +2291,6 @@ function setHint() {
 
 startBtn.addEventListener('click', () => {
   started = true;
-  startWindSound();   // browsers only allow sound after a click, so the wind starts here
   menuScreen.classList.add('hidden');
   hud.classList.remove('hidden');
 
@@ -2716,7 +2596,7 @@ function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
   const date = (!buying && plot.boughtAt ? new Date(plot.boughtAt) : new Date()).toLocaleDateString();
 
   paperBody.textContent = '';
-  paperRow('House number', plot.id.replace('plot_', ''));
+  paperRow('House number', String(plot.number));
   paperRow('House style', style);
   paperRow('Price', price != null ? `${price} coins` : '-');
   paperRow(buying ? 'Buyer' : 'Owner', buying ? (currentUser.displayName || 'Player') : (plot.ownerName || 'A player'));
@@ -2931,218 +2811,194 @@ function updateClaimPrompt() {
 }
 
 // =====================================================
-// 6g. THE BREEZE (an occasional gust of wind, like a real day outdoors)
+// 8d. BREEZES (now and then a gust makes the trees and branches shake)
 // =====================================================
-// The air is almost still most of the time. Every so often a gust arrives:
-// it builds up, peaks and fades away. While it blows:
-//   - trees and reeds lean along the wind and sway harder (a wave rolls across the land)
-//   - the clouds drift a little faster
-//   - a few leaves fly past you
-//   - a soft wind sound swells and fades (quieter when you are inside a house)
+const gust = { next: 10, start: 0, length: 0, power: 0 };   // times are in seconds
 
-// ---------- Settings (change these numbers to change the weather) ----------
-const BREEZE_FIRST_GUST = 6;     // seconds after the page loads until the first gust
-const BREEZE_CALM_MIN = 15;      // seconds of calm between gusts (random between min and max)
-const BREEZE_CALM_MAX = 45;
-const BREEZE_LENGTH_MIN = 5;     // how long one gust lasts, in seconds
-const BREEZE_LENGTH_MAX = 12;
-const BREEZE_STILL_AIR = 0.05;   // the faint steady breath of wind between gusts
+function updateBreeze(timeSec) {
+  if (gust.length === 0 && timeSec > gust.next) {
+    gust.start = timeSec;
+    gust.length = 4 + Math.random() * 4;      // a gust lasts 4 to 8 seconds
+    gust.power = 1.6 + Math.random() * 1.8;   // some gusts are stronger than others
+  }
 
-const breeze = {
-  calmLeft: BREEZE_FIRST_GUST,   // seconds until the next gust starts
-  blowing: false,                // true while a gust is happening
-  gustTime: 0,                   // how long this gust has been blowing
-  gustLength: 0,                 // how long this gust will last
-  gustPeak: 0,                   // how strong this gust gets (0 to 1)
-  level: 0,                      // smooth strength of the gust right now (0 to 1)
-  clock: 0                       // wind clock, runs faster in a gust
-};
-
-const randomBetween = (a, b) => a + Math.random() * (b - a);
-
-function updateBreeze(dt) {
-  let target = 0;
-
-  if (breeze.blowing) {
-    breeze.gustTime += dt;
-    const t = breeze.gustTime / breeze.gustLength;
-    if (t >= 1) {
-      breeze.blowing = false;
-      breeze.calmLeft = randomBetween(BREEZE_CALM_MIN, BREEZE_CALM_MAX);
+  let strength = 1;                            // 1 = calm
+  if (gust.length > 0) {
+    const k = (timeSec - gust.start) / gust.length;
+    if (k >= 1) {
+      gust.length = 0;
+      gust.next = timeSec + 10 + Math.random() * 20;   // calm again for 10 to 30 seconds
     } else {
-      const bell = Math.sin(Math.PI * t);   // 0 -> 1 -> 0 over the gust
-      target = breeze.gustPeak * bell * bell;
-    }
-  } else {
-    breeze.calmLeft -= dt;
-    if (breeze.calmLeft <= 0) {
-      breeze.blowing = true;
-      breeze.gustTime = 0;
-      breeze.gustLength = randomBetween(BREEZE_LENGTH_MIN, BREEZE_LENGTH_MAX);
-      breeze.gustPeak = randomBetween(0.45, 1);   // some gusts are gentle, some are strong
+      strength = 1 + gust.power * Math.pow(Math.sin(Math.PI * k), 2);   // rises, peaks, fades
     }
   }
-
-  // Ease towards the target so nothing ever jumps.
-  breeze.level += (target - breeze.level) * Math.min(1, dt * 3);
-
-  // A gust is not perfectly steady: it flutters a little.
-  const flutter = 0.88 + 0.12 * Math.sin(breeze.clock * 2.3) * Math.sin(breeze.clock * 0.9 + 1);
-  const gust = Math.min(1, BREEZE_STILL_AIR + breeze.level * flutter);
-
-  gustUniform.value = gust;
-  treeWindStrength.value = 1 + 4 * gust;          // trees sway up to 5x more
-  breeze.clock += dt * (1 + 1.2 * gust);          // everything sways a bit faster too
-  windUniform.value = breeze.clock;
+  breeze.value = strength;
 }
 
-// ---------- Leaves blowing past (only visible during a gust) ----------
-const LEAF_COUNT = 70;
-const LEAF_RADIUS = 28;   // leaves live in a circle this big around you
-const leafColors = [0x6cbc58, 0x8fc65a, 0xc9b94a, 0xd28a3c, 0x5fb04f];
+// =====================================================
+// 8d. HOUSE SIGN BOARDS (house number, owner and roommates)
+// =====================================================
+// Every house has a wooden sign in front of its gate. To keep the game fast, the signs are only
+// made for the houses close to you, and they are redrawn when the owner or the roommates change.
+const SIGN_RANGE = 70;                       // houses closer than this (metres) get a sign
+const SIGN_W = 2.6;
+const SIGN_H = 1.93;
+const SIGN_X = 3.2;                          // where the sign stands (house's own directions)
+const SIGN_Z = 11.9;
 
-const leafMesh = new THREE.InstancedMesh(
-  new THREE.PlaneGeometry(0.22, 0.14),
-  new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
-  LEAF_COUNT
-);
-leafMesh.frustumCulled = false;
-leafMesh.visible = false;
-scene.add(leafMesh);
+const signBoardGeo = new THREE.PlaneGeometry(SIGN_W, SIGN_H);
+const signFrameGeo = new THREE.BoxGeometry(SIGN_W + 0.16, SIGN_H + 0.16, 0.08);
+const signPostGeo = new THREE.CylinderGeometry(0.07, 0.07, 3.1, 8);
+const signWoodMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
+const signs = new Map();                     // plot id -> { group, texture, material, sig }
 
-const leaves = [];
-const leafColor = new THREE.Color();
-for (let i = 0; i < LEAF_COUNT; i++) {
-  leaves.push({
-    x: player.x + randomBetween(-LEAF_RADIUS, LEAF_RADIUS),
-    y: 0.5 + Math.random() * 6,
-    z: player.z + randomBetween(-LEAF_RADIUS, LEAF_RADIUS),
-    speed: randomBetween(0.6, 1.1),     // some leaves are faster than others
-    wobble: randomBetween(1.5, 3.5),    // how fast it flutters
-    phase: Math.random() * Math.PI * 2,
-    spin: randomBetween(2, 6)
+// The words on one house's sign.
+function signText(plot) {
+  const style = plot.house.charAt(0).toUpperCase() + plot.house.slice(1);
+  const data = { title: `HOUSE No. ${plot.number}`, owner: '', label: '', rows: [] };
+
+  if (!plot.ownerId) {
+    const price = fb && fb.PRICES ? fb.PRICES[plot.house] : null;
+    data.owner = price ? `FOR SALE: ${price} coins` : 'FOR SALE';
+    data.label = `${style} house`;
+    data.forSale = true;
+    return data;
+  }
+
+  data.owner = `Owner: ${plot.ownerName || 'A player'}`;
+  data.label = 'Roommates:';
+  const ids = plot.memberIds || [];
+  const members = plot.members || {};
+  ids.slice(0, 3).forEach((id) => {
+    const m = members[id] || {};
+    data.rows.push(`${m.name || 'Member'} (${m.role || 'Friend'})`);
   });
-  leafColor.set(leafColors[i % leafColors.length]);
-  leafMesh.setColorAt(i, leafColor);
-}
-if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
-
-// Put a leaf back at the upwind edge of the circle, at a random height.
-function respawnLeaf(leaf, anywhere) {
-  const wx = windDirUniform.value.x;
-  const wz = windDirUniform.value.y;
-  const side = randomBetween(-LEAF_RADIUS, LEAF_RADIUS);   // sideways position
-  const back = anywhere ? randomBetween(-LEAF_RADIUS, LEAF_RADIUS) : -LEAF_RADIUS; // upwind position
-  leaf.x = player.x + wx * back - wz * side;
-  leaf.z = player.z + wz * back + wx * side;
-  leaf.y = Math.max(0.4, player.y - 1.5) + Math.random() * 6;
+  if (ids.length > 3) data.rows.push(`+ ${ids.length - 3} more`);
+  if (!ids.length) data.rows.push('none yet');
+  return data;
 }
 
-function updateLeaves(dt) {
-  const strength = gustUniform.value;
-  const show = !inside && strength > 0.15;
-  leafMesh.visible = show;
-  if (!show) return;
-
-  const wx = windDirUniform.value.x;
-  const wz = windDirUniform.value.y;
-  const size = Math.min(1, (strength - 0.15) * 3);   // leaves fade in with scale as the gust builds
-  const t = breeze.clock;
-
-  for (let i = 0; i < LEAF_COUNT; i++) {
-    const leaf = leaves[i];
-    const flow = leaf.speed * (2 + 10 * strength);   // metres per second along the wind
-    const flap = Math.sin(t * leaf.wobble + leaf.phase);
-    leaf.x += (wx * flow - wz * flap * 0.8) * dt;
-    leaf.z += (wz * flow + wx * flap * 0.8) * dt;
-    leaf.y += (flap * 0.9 - 0.3) * dt;               // bobs up and down, drifts slowly down
-
-    // Too far from you, or on the ground? Send it back upwind.
-    const dx = leaf.x - player.x;
-    const dz = leaf.z - player.z;
-    const ahead = dx * wx + dz * wz;
-    if (ahead > LEAF_RADIUS || Math.abs(dx) > LEAF_RADIUS * 1.6 || Math.abs(dz) > LEAF_RADIUS * 1.6 || leaf.y < 0.15) {
-      respawnLeaf(leaf, false);
-    }
-
-    dummy.position.set(leaf.x, leaf.y, leaf.z);
-    dummy.rotation.set(t * leaf.spin, t * leaf.spin * 0.7 + leaf.phase, t * leaf.spin * 0.4);
-    dummy.scale.setScalar(size);
-    dummy.updateMatrix();
-    leafMesh.setMatrixAt(i, dummy.matrix);
-  }
-  leafMesh.instanceMatrix.needsUpdate = true;
-}
-
-// ---------- The sound of the wind (soft noise that swells with the gust) ----------
-// Browsers only allow sound after a tap or click, so this starts from the "Enter the World" button.
-let windAudio = null;
-
-function startWindSound() {
-  if (windAudio) {
-    if (windAudio.ctx.state === 'suspended') windAudio.ctx.resume();
-    return;
-  }
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtx) return;
-
-  try {
-    const ctx = new AudioCtx();
-
-    // 3 seconds of soft "brown" noise that loops without a click (the end fades into the start).
-    const length = ctx.sampleRate * 3;
-    const fade = Math.floor(ctx.sampleRate * 0.2);
-    const raw = new Float32Array(length + fade);
-    let last = 0;
-    for (let i = 0; i < raw.length; i++) {
-      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
-      raw[i] = last * 3.5;
-    }
-    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < length; i++) data[i] = raw[i];
-    for (let i = 0; i < fade; i++) {
-      const a = i / fade;
-      data[i] = raw[i] * Math.sqrt(a) + raw[length + i] * Math.sqrt(1 - a);
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-
-    const filter = ctx.createBiquadFilter();   // a darker sound when calm, brighter in a strong gust
-    filter.type = 'lowpass';
-    filter.frequency.value = 250;
-    filter.Q.value = 0.7;
-
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    source.start();
-
-    windAudio = { ctx, filter, gain };
-  } catch (err) {
-    windAudio = null;   // no sound is fine, the breeze still looks right
+// Shrinks the text until it fits the board.
+function fitText(ctx, text, maxWidth, size, weight) {
+  let px = size;
+  ctx.font = `${weight} ${px}px "Trebuchet MS", Arial, sans-serif`;
+  while (px > 14 && ctx.measureText(text).width > maxWidth) {
+    px -= 2;
+    ctx.font = `${weight} ${px}px "Trebuchet MS", Arial, sans-serif`;
   }
 }
 
-function updateWindSound() {
-  if (!windAudio) return;
-  const strength = gustUniform.value;
-  const muffle = inside ? 0.25 : 1;   // walls make the wind quieter
-  const now = windAudio.ctx.currentTime;
-  windAudio.gain.gain.setTargetAtTime(strength * 0.18 * muffle, now, 0.2);
-  windAudio.filter.frequency.setTargetAtTime(250 + strength * 750 * muffle, now, 0.2);
+function drawSign(canvas, data) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.fillStyle = data.forSale ? '#f7e4b5' : '#fbf3dc';       // paper colour
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = data.forSale ? '#2e7d32' : '#9c2a1c';       // title band
+  ctx.fillRect(0, 0, w, 96);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff7e6';
+  fitText(ctx, data.title, w - 40, 62, 'bold');
+  ctx.fillText(data.title, w / 2, 50);
+
+  ctx.fillStyle = '#4a2f1b';
+  fitText(ctx, data.owner, w - 40, 46, 'bold');
+  ctx.fillText(data.owner, w / 2, 140);
+
+  ctx.fillStyle = '#8a6a44';
+  fitText(ctx, data.label, w - 40, 36, 'bold');
+  ctx.fillText(data.label, w / 2, 192);
+
+  ctx.fillStyle = '#4a2f1b';
+  data.rows.forEach((row, i) => {
+    fitText(ctx, row, w - 50, 38, 'normal');
+    ctx.fillText(row, w / 2, 232 + i * 40);
+  });
+
+  ctx.strokeStyle = '#6b4a2b';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, w - 8, h - 8);
 }
+
+function makeSign(plot) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 380;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  const material = new THREE.MeshBasicMaterial({ map: texture });
+
+  const group = new THREE.Group();
+  group.position.set(plot.x, 0, plot.z);
+  group.rotation.y = plot.facing;
+
+  // Everything below is placed in the house's own directions (x = right, z = toward the street).
+  const SIGN_Y = 1.9;
+  [-1.2, 1.2].forEach((dx) => {
+    const post = new THREE.Mesh(signPostGeo, signWoodMat);
+    post.position.set(SIGN_X + dx, 1.55, SIGN_Z);
+    group.add(post);
+  });
+  const frame = new THREE.Mesh(signFrameGeo, signWoodMat);
+  frame.position.set(SIGN_X, SIGN_Y, SIGN_Z);
+  group.add(frame);
+
+  const front = new THREE.Mesh(signBoardGeo, material);       // read from the street
+  front.position.set(SIGN_X, SIGN_Y, SIGN_Z + 0.05);
+  group.add(front);
+  const back = new THREE.Mesh(signBoardGeo, material);        // read from the garden side
+  back.position.set(SIGN_X, SIGN_Y, SIGN_Z - 0.05);
+  back.rotation.y = Math.PI;
+  group.add(back);
+
+  scene.add(group);
+  return { group, texture, material, canvas, sig: '' };
+}
+
+// Runs a few times a second: makes signs for close houses, redraws changed ones, removes far ones.
+function updateSigns() {
+  const near = new Set();
+  PLOTS.forEach((plot) => {
+    if (Math.hypot(plot.x - player.x, plot.z - player.z) < SIGN_RANGE) near.add(plot.id);
+  });
+
+  signs.forEach((sign, id) => {
+    if (!near.has(id)) {
+      scene.remove(sign.group);
+      sign.texture.dispose();
+      sign.material.dispose();
+      signs.delete(id);
+    }
+  });
+
+  near.forEach((id) => {
+    const plot = PLOT_BY_ID.get(id);
+    let sign = signs.get(id);
+    if (!sign) {
+      sign = makeSign(plot);
+      signs.set(id, sign);
+    }
+    const data = signText(plot);
+    const sig = JSON.stringify(data);
+    if (sig !== sign.sig) {
+      sign.sig = sig;
+      drawSign(sign.canvas, data);
+      sign.texture.needsUpdate = true;
+    }
+  });
+}
+const PLOT_BY_ID = new Map(PLOTS.map((plot) => [plot.id, plot]));
 
 // =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
 let lastTime = performance.now();
 let lodTimer = 0;
+let signTimer = 0;
 
 function animate(now) {
   requestAnimationFrame(animate);
@@ -3164,6 +3020,15 @@ function animate(now) {
     }
   }
 
+  // Keep the house sign boards up to date (about 3 times a second).
+  if (started) {
+    signTimer += dt;
+    if (signTimer > 0.35) {
+      signTimer = 0;
+      updateSigns();
+    }
+  }
+
   // Put the camera where the player is.
   camera.position.set(player.x, player.y, player.z);
   camera.rotation.set(player.pitch, player.yaw, 0);
@@ -3171,20 +3036,16 @@ function animate(now) {
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
 
-  // The breeze: gusts come and go, and move the trees, reeds, leaves and the wind sound.
-  updateBreeze(dt);
-  updateLeaves(dt);
-  updateWindSound();
-
-  // Clouds drift slowly to the right (a little faster in a gust), then wrap around.
-  const cloudSpeed = 3 + gustUniform.value * 5;
+  // Clouds drift slowly to the right, then wrap around.
   clouds.children.forEach((cloud) => {
-    cloud.position.x += dt * cloudSpeed;
+    cloud.position.x += dt * 3;
     if (cloud.position.x > 800) cloud.position.x = -800;
   });
 
-  // The river flows (the ripples slide along the water).
+  // The river flows (the ripples slide along the water) and the wind clock ticks.
   waterTexture.offset.y -= dt * 0.05;
+  windUniform.value = now / 1000;
+  updateBreeze(now / 1000);
 
   renderer.render(scene, camera);
 }
