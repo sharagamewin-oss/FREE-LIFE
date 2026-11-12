@@ -2454,7 +2454,7 @@ doorBtn.addEventListener('click', () => {
 });
 
 // =====================================================
-// 8c. FIREBASE (sign in, game money, buying, permission to enter)
+// 8c. FIREBASE (sign in, game money, buying, selling, permission to enter)
 // =====================================================
 // Loaded on its own, so if Firebase is not set up yet the game still works.
 const authBtn = document.getElementById('authBtn');
@@ -2478,6 +2478,7 @@ let coins = null;              // the player's game coins (null = not known yet)
 let stopWatchers = [];         // functions that stop listening when signing out
 let agreementOpen = false;     // true while any paper or panel is open
 let pendingPlot = null;        // the house being bought in the open paper
+let pendingMode = 'buy';        // what the open paper is for: 'buy', 'view' or 'sell'
 let requestsToMe = [];         // people asking to enter MY house
 let myRequestPlots = new Set(); // houses I asked to enter
 
@@ -2587,35 +2588,54 @@ function paperRow(label, value) {
   paperBody.appendChild(row);
 }
 
-function openAgreement(plot, mode) {   // mode: 'buy' or 'view'
+function openAgreement(plot, mode) {   // mode: 'buy', 'view' or 'sell'
   freezePlayer();
 
   const style = plot.house.charAt(0).toUpperCase() + plot.house.slice(1);
   const buying = mode === 'buy';
+  const selling = mode === 'sell';
   const price = buying ? fb.PRICES[plot.house] : plot.price;
-  const date = (!buying && plot.boughtAt ? new Date(plot.boughtAt) : new Date()).toLocaleDateString();
+  const date = (mode === 'view' && plot.boughtAt ? new Date(plot.boughtAt) : new Date()).toLocaleDateString();
+  const known = typeof coins === 'number';
 
+  agreement.querySelector('h2').textContent = selling ? 'SALE AGREEMENT' : 'HOUSE AGREEMENT';
   paperBody.textContent = '';
   paperRow('House number', String(plot.number));
   paperRow('House style', style);
-  paperRow('Price', price != null ? `${price} coins` : '-');
-  paperRow(buying ? 'Buyer' : 'Owner', buying ? (currentUser.displayName || 'Player') : (plot.ownerName || 'A player'));
+  paperRow(selling ? 'Sale price' : 'Price', price != null ? `${price} coins` : '-');
+  if (buying || selling) {
+    paperRow(buying ? 'Buyer' : 'Seller', currentUser.displayName || 'Player');
+  } else {
+    paperRow('Owner', plot.ownerName || 'A player');
+  }
   paperRow('Date', date);
   if (buying) {
-    paperRow('Your coins now', typeof coins === 'number' ? String(coins) : '...');
-    paperRow('Coins after buying', typeof coins === 'number' ? String(coins - price) : '...');
+    paperRow('Your coins now', known ? String(coins) : '...');
+    paperRow('Coins after buying', known ? String(coins - price) : '...');
+  }
+  if (selling) {
+    paperRow('Your coins now', known ? String(coins) : '...');
+    paperRow('Coins after selling', known ? String(coins + price) : '...');
   }
 
-  pendingPlot = buying ? plot : null;
+  // When the owner views their own paper, the button becomes "Sell this house back".
+  const canSellFromView = mode === 'view' && currentUser && plot.ownerId === currentUser.uid && plot.price != null;
+  pendingPlot = (mode === 'view' && !canSellFromView) ? null : plot;
+  pendingMode = mode;
   paperMsg.style.color = '#b3261e';
-  paperMsg.textContent = '';
-  paperYes.classList.toggle('hidden', !buying);
+  paperMsg.textContent = selling ? 'Your roommates will lose access. This cannot be undone.' : '';
+  paperYes.textContent = selling ? 'Sign & Sell' : (canSellFromView ? 'Sell this house back' : 'Sign & Buy');
+  paperYes.classList.toggle('hidden', mode === 'view' && !canSellFromView);
   paperYes.disabled = false;
-  paperNo.textContent = buying ? 'Cancel' : 'Close';
+  paperNo.textContent = mode === 'view' ? 'Close' : 'Cancel';
 
-  if (buying && (typeof coins !== 'number' || coins < price)) {
+  if (buying && (!known || coins < price)) {
     paperYes.disabled = true;
     paperMsg.textContent = 'You do not have enough coins for this house.';
+  }
+  if (selling && (!known || price == null)) {
+    paperYes.disabled = true;
+    paperMsg.textContent = 'This house cannot be sold right now.';
   }
   agreement.classList.remove('hidden');
 }
@@ -2624,24 +2644,44 @@ paperNo.addEventListener('click', closeAgreement);
 
 paperYes.addEventListener('click', async () => {
   if (!fb || !pendingPlot) return;
+  const plot = pendingPlot;
+  const mode = pendingMode;
+
+  // From the "view my agreement" paper: open the sale paper instead of buying.
+  if (mode === 'view') {
+    openAgreement(plot, 'sell');
+    return;
+  }
+
   paperYes.disabled = true;
   paperMsg.style.color = '#4a2f1b';
   paperMsg.textContent = 'Signing the paper...';
   try {
-    await fb.buyPlot(pendingPlot.id, pendingPlot.house);
-    closeAgreement();
-    hudHint.textContent = 'Congratulations! This house is now yours. Only you can enter it.';
+    if (mode === 'sell') {
+      const waiting = requestsToMe.filter((r) => r.plotId === plot.id).map((r) => r.id);
+      await fb.sellPlot(plot.id, waiting);
+      closeAgreement();
+      hudHint.textContent = `You sold your house. ${plot.price} coins were added to your wallet.`;
+    } else {
+      await fb.buyPlot(plot.id, plot.house);
+      closeAgreement();
+      hudHint.textContent = 'Congratulations! This house is now yours. Only you can enter it.';
+    }
   } catch (err) {
-    console.warn('Could not buy:', err);
+    console.warn('Could not finish:', err);
     const messages = {
       'taken': 'Sorry, someone just bought this house.',
       'has-house': 'You already own a house.',
       'no-money': 'You do not have enough coins for this house.',
-      'no-wallet': 'Your wallet is not ready yet. Try again in a moment.'
+      'no-wallet': 'Your wallet is not ready yet. Try again in a moment.',
+      'not-owner': 'You do not own this house.',
+      'no-price': 'This house has no price record, so it cannot be sold.'
     };
     paperMsg.style.color = '#b3261e';
-    paperMsg.textContent = messages[err.message] || 'Could not complete the purchase. Please try again.';
-    paperYes.disabled = (err.message === 'taken' || err.message === 'has-house' || err.message === 'no-money');
+    paperMsg.textContent = messages[err.message] ||
+      (mode === 'sell' ? 'Could not sell the house. Please try again.' : 'Could not complete the purchase. Please try again.');
+    const final = ['taken', 'has-house', 'no-money', 'not-owner', 'no-price'];
+    paperYes.disabled = final.includes(err.message);
   }
 });
 
@@ -2730,6 +2770,20 @@ function renderHousePanel() {
     row.append(who, remove);
     housePanelBody.appendChild(row);
   });
+
+  houseHeading('Sell my house');
+  if (mine.price == null) {
+    houseNote('This house has no price record, so it cannot be sold.');
+  } else {
+    houseNote(`You get back ${mine.price} coins. Your roommates will lose access.`);
+    const sellRow = document.createElement('div');
+    sellRow.className = 'houseRow';
+    sellRow.appendChild(houseButton(`Sell house for ${mine.price} coins`, 'no', () => {
+      housePanelMsg.textContent = '';
+      openAgreement(mine, 'sell');
+    }));
+    housePanelBody.appendChild(sellRow);
+  }
 }
 
 houseBtn.addEventListener('click', () => {
@@ -2787,7 +2841,7 @@ function updateClaimPrompt() {
         claimMode = 'buy';
       }
     } else if (plot.ownerId === uid) {
-      text = 'View my house agreement';
+      text = 'My house agreement (sell here)';
       claimMode = 'view';
     } else if (uid && (plot.memberIds || []).includes(uid)) {
       const m = (plot.members || {})[uid] || {};
