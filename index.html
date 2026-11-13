@@ -37,6 +37,7 @@
       Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
       Fly: press F. Space goes up, Ctrl or C goes down. Press F again to land.<br>
       Houses: stand at a house door and press E to go inside. Press E at the inside door to go out.<br>
+      You: Q sits (on a sofa or chair if you are close). Z sleeps (in the bed if you are close). V switches between seeing yourself and first person.<br>
       Phone: left circle to walk, drag anywhere else to look, tap Fly to fly, tap the door button to go in or out.
     </p>
   </div>
@@ -57,7 +58,12 @@
     <button id="downBtn" class="flyBtn small hidden">&#9660;</button>
     <button id="flyBtn" class="flyBtn">Fly</button>
   </div>
-
+  <!-- Your character: sit, sleep, change view -->
+  <div id="actionBar" class="hidden">
+    <button id="sitBtn" class="actionBtn">Sit (Q)</button>
+    <button id="sleepBtn" class="actionBtn">Sleep (Z)</button>
+    <button id="viewBtn" class="actionBtn">First person (V)</button>
+  </div>
   <!-- Sign in / sign out (top centre) -->
   <div id="authBar">
     <span id="authName" class="hidden"></span>
