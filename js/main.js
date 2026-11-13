@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 import { createPets } from './pets.js';
 import { createAvatar } from './avatar.js';
+import { createMultiplayer } from './multiplayer.js';
 // =====================================================
 // 1. BASIC SETUP: renderer, scene, camera
 // =====================================================
@@ -2698,6 +2699,7 @@ const housePanelMsg = document.getElementById('housePanelMsg');
 const houseClose = document.getElementById('houseClose');
 
 let fb = null;                 // the Firebase helpers, once loaded
+let multiplayer = null;         // set up later, near the avatar code
 let currentUser = null;        // the signed-in person, or null
 let coins = null;              // the player's game coins (null = not known yet)
 let stopWatchers = [];         // functions that stop listening when signing out
@@ -2744,6 +2746,11 @@ import('./firebase.js').then((mod) => {
     authName.classList.toggle('hidden', !user);
     updateCoinText();
     updateHouseBtn();
+
+    if (multiplayer) {
+      if (user) multiplayer.start(user);
+      else multiplayer.stop();
+    }
 
     if (user) {
       try { await fb.ensureWallet(user); } catch (err) { console.warn('Wallet error:', err); }
@@ -3292,7 +3299,27 @@ let avatarTooClose = false;      // true when the camera is squeezed against a w
 const SIT_RANGE = 1.8;           // how close you must stand to a sofa or chair to sit on it
 const SLEEP_RANGE = 2.6;         // how close you must stand to the bed to sleep in it
 const headPos = new THREE.Vector3();
-
+multiplayer = createMultiplayer({
+  scene,
+  groundAt: (x, z) => (isOnBridge(x, z) ? BRIDGE_TOP : ROAD_TOP),
+  onChatOpen: () => { keys.clear(); vel.x = 0; vel.z = 0; },   // stop walking while you type
+  getSelf: () => {
+    avatar.getHeadPosition(headPos);
+    return {
+      x: player.x,
+      z: player.z,
+      altitude: Math.max(0, player.y - EYE_HEIGHT),
+      state: avatar.state,
+      flying,
+      inside: !!inside,
+      thirdPerson,
+      headX: headPos.x,
+      headY: headPos.y,
+      headZ: headPos.z
+    };
+  }
+});
+if (currentUser) multiplayer.start(currentUser);
 const sitBtn = document.getElementById('sitBtn');
 const sleepBtn = document.getElementById('sleepBtn');
 const viewBtn = document.getElementById('viewBtn');
@@ -3531,7 +3558,7 @@ function animate(now) {
   pets.update(dt);
     // Move your avatar, then put the camera behind it (or in its eyes in first person).
   updateAvatarAndCamera(dt);
-
+  if (started) multiplayer.update(dt);
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
 
