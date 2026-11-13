@@ -493,3 +493,38 @@ html, body {
 }
 
 #houseButtons { display: flex; justify-content: center; }
+/* ---------- Your character: sit, sleep, change view ---------- */
+#actionBar {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 20;
+}
+.actionBtn {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: bold;
+  color: #7a3b22;
+  background: rgba(255, 241, 208, 0.9);
+  border: none;
+  border-radius: 999px;
+  padding: 9px 18px;
+  box-shadow: 0 3px 0 #e0a56a;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.actionBtn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #e0a56a;
+}
+/* On phones, sit above the walking circle so they do not overlap. */
+@media (pointer: coarse) {
+  #actionBar {
+    bottom: 180px;
+  }
+}
