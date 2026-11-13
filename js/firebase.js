@@ -197,3 +197,58 @@ export async function removeMember(plotId, uid) {
     })
     .commit();
 }
+// ---------- Pets ----------
+
+// Calls cb({ petId: { ownerId, ownerName, name, type }, ... }) now and whenever a pet is adopted or released.
+export function watchPets(cb) {
+  const pets = {};
+  return onSnapshot(collection(db, 'pets'), (snap) => {
+    snap.docChanges().forEach((change) => {
+      if (change.type === 'removed') {
+        delete pets[change.doc.id];
+        return;
+      }
+      const d = change.doc.data();
+      pets[change.doc.id] = {
+        ownerId: d.ownerId,
+        ownerName: d.ownerName || 'A player',
+        name: d.name || 'Pet',
+        type: d.type
+      };
+    });
+    cb(pets);
+  }, (err) => console.warn('Could not read pets:', err));
+}
+
+// Adopt a pet (one pet per player). Errors: not-signed-in, has-pet, pet-taken
+export async function adoptPet(petId, type, name) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('not-signed-in');
+  const petRef = doc(db, 'pets', petId);
+  const ownerRef = doc(db, 'petOwners', user.uid);
+
+  await runTransaction(db, async (tx) => {
+    const o = await tx.get(ownerRef);
+    const p = await tx.get(petRef);
+    if (o.exists()) throw new Error('has-pet');
+    if (p.exists()) throw new Error('pet-taken');
+    tx.set(ownerRef, { petId });
+    tx.set(petRef, {
+      ownerId: user.uid,
+      ownerName: user.displayName || 'A player',
+      type,
+      name,
+      adoptedAt: serverTimestamp()
+    });
+  });
+}
+
+// Let the pet go back to the streets.
+export async function releasePet(petId) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('not-signed-in');
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'pets', petId));
+  batch.delete(doc(db, 'petOwners', user.uid));
+  await batch.commit();
+}
