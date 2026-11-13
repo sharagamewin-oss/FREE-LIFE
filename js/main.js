@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 import { createPets } from './pets.js';
 import { createAvatar } from './avatar.js';
-import { createMultiplayer } from './multiplayer.js';
+
 // =====================================================
 // 1. BASIC SETUP: renderer, scene, camera
 // =====================================================
@@ -2747,10 +2747,8 @@ import('./firebase.js').then((mod) => {
     updateCoinText();
     updateHouseBtn();
 
-    if (multiplayer) {
-      if (user) multiplayer.start(user);
-      else multiplayer.stop();
-    }
+    if (user) startMultiplayer(user);
+    else if (multiplayer) multiplayer.stop();
 
     if (user) {
       try { await fb.ensureWallet(user); } catch (err) { console.warn('Wallet error:', err); }
@@ -2767,7 +2765,6 @@ import('./firebase.js').then((mod) => {
       }));
     }
   });
-
   // Every time owners change in Firebase, copy them into the PLOTS list.
   fb.watchPlots((owners) => {
     PLOTS.forEach((plot) => {
@@ -3299,31 +3296,42 @@ let avatarTooClose = false;      // true when the camera is squeezed against a w
 const SIT_RANGE = 1.8;           // how close you must stand to a sofa or chair to sit on it
 const SLEEP_RANGE = 2.6;         // how close you must stand to the bed to sleep in it
 const headPos = new THREE.Vector3();
-multiplayer = createMultiplayer({
-  scene,
-  groundAt: (x, z) => (isOnBridge(x, z) ? BRIDGE_TOP : ROAD_TOP),
-  onChatOpen: () => { keys.clear(); vel.x = 0; vel.z = 0; },   // stop walking while you type
-  getSelf: () => {
-    avatar.getHeadPosition(headPos);
-    return {
-      x: player.x,
-      z: player.z,
-      altitude: Math.max(0, player.y - EYE_HEIGHT),
-      state: avatar.state,
-      flying,
-      inside: !!inside,
-      thirdPerson,
-      headX: headPos.x,
-      headY: headPos.y,
-      headZ: headPos.z
-    };
+
+async function startMultiplayer(user) {
+  try {
+    if (!multiplayer) {
+      const { createMultiplayer } = await import('./multiplayer.js');
+      multiplayer = createMultiplayer({
+        scene,
+        groundAt: (x, z) => (isOnBridge(x, z) ? BRIDGE_TOP : ROAD_TOP),
+        onChatOpen: () => { keys.clear(); vel.x = 0; vel.z = 0; },   // stop walking while you type
+        getSelf: () => {
+          avatar.getHeadPosition(headPos);
+          return {
+            x: player.x,
+            z: player.z,
+            altitude: Math.max(0, player.y - EYE_HEIGHT),
+            state: avatar.state,
+            flying,
+            inside: !!inside,
+            thirdPerson,
+            headX: headPos.x,
+            headY: headPos.y,
+            headZ: headPos.z
+          };
+        }
+      });
+    }
+    multiplayer.start(user);
+  } catch (err) {
+    console.warn('Multiplayer could not start:', err);
   }
-});
-if (currentUser) multiplayer.start(currentUser);
+}
+if (currentUser) startMultiplayer(currentUser);
+
 const sitBtn = document.getElementById('sitBtn');
 const sleepBtn = document.getElementById('sleepBtn');
 const viewBtn = document.getElementById('viewBtn');
-
 // A short message in the hint line, then back to the normal hint.
 let hintTimer = 0;
 function flashHint(text) {
