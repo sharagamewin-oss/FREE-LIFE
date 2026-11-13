@@ -20,7 +20,7 @@ service cloud.firestore {
         && resource.data.ownerId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'memberIds'])
         && request.resource.data.get('memberIds', []).size() <= 6;
-            // The owner can delete the plot only when selling (the player's plotId becomes null).
+      // The owner can delete the plot only when selling (the player's plotId becomes null).
       allow delete: if request.auth != null
         && resource.data.ownerId == request.auth.uid
         && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.plotId == null;
@@ -70,11 +70,9 @@ service cloud.firestore {
         && request.resource.data.coins == resource.data.coins
              + get(/databases/$(database)/documents/plots/$(resource.data.plotId)).data.price;
 
-
       allow delete: if false;
     }
-  }
-}
+
     // Adoptable pets. Anyone can see who adopted which pet. Each player can adopt one.
     match /pets/{petId} {
       allow read: if true;
@@ -98,3 +96,6 @@ service cloud.firestore {
       allow update: if false;
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
+
+  }
+}
