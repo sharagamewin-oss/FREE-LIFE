@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
+import { createPets } from './pets.js';
 // =====================================================
 // 1. BASIC SETUP: renderer, scene, camera
 // =====================================================
@@ -3099,7 +3100,18 @@ function updateSigns() {
   });
 }
 const PLOT_BY_ID = new Map(PLOTS.map((plot) => [plot.id, plot]));
-
+// =====================================================
+// 8e. ADOPTABLE PETS (the code is in js/pets.js)
+// =====================================================
+const pets = createPets({
+  scene, makeBuilder, makeRng, player, keys,
+  grid: { pitch: PLOT_PITCH, iMin: ROAD_I_MIN, iMax: ROAD_I_MAX, jMin: ROAD_J_MIN, jMax: ROAD_J_MAX },
+  canInteract: () => started && !inside && !agreementOpen && !flying,
+  blocked: (x, z) => blockedBySolid(x, z, 0) || (!isOnBridge(x, z) && Math.abs(x - riverX(z)) < RIVER_WIDTH / 2 + 1),
+  groundY: (x, z) => (isOnBridge(x, z) ? BRIDGE_TOP : ROAD_TOP),
+  isInside: () => !!inside,
+  hint: (text) => { hudHint.textContent = text; }
+});
 // =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
@@ -3135,7 +3147,7 @@ function animate(now) {
       updateSigns();
     }
   }
-
+  pets.update(dt);
   // Put the camera where the player is.
   camera.position.set(player.x, player.y, player.z);
   camera.rotation.set(player.pitch, player.yaw, 0);
