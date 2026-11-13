@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 import { createPets } from './pets.js';
+import { createAvatar } from './avatar.js';
 // =====================================================
 // 1. BASIC SETUP: renderer, scene, camera
 // =====================================================
@@ -1884,7 +1885,7 @@ function getInterior(style) {
     built.group.position.set(5000 + i * 100, 0, 0);
     built.group.visible = false;
     scene.add(built.group);
-    interiors[style] = { mesh: built.group, blocks: built.blocks, x: 5000 + i * 100, z: 0 };
+    interiors[style] = { mesh: built.group, blocks: built.blocks, spots: built.spots, x: 5000 + i * 100, z: 0 };;
   }
   return interiors[style];
 }
@@ -2044,6 +2045,7 @@ holdButton(downBtn, (v) => { touchDown = v; });
 // --- Turning fly mode on and off ---
 function toggleFly() {
   if (inside) return; // no flying inside a house
+  if (avatar.state !== 'stand') standUp();
   if (!flying) {
     // Take off: a small push upward so we leave the ground.
     flying = true;
@@ -2202,6 +2204,15 @@ function updatePlayer(dt) {
   // Add the touch joystick (pushing up = walk forward).
   forward += -joy.y;
   strafe += joy.x;
+    // Sitting or sleeping: you stay where you are. Pressing a walk key stands you up.
+  if (avatar.state !== 'stand') {
+    if (Math.abs(forward) > 0.2 || Math.abs(strafe) > 0.2) standUp();
+    else {
+      vel.x = 0;
+      vel.z = 0;
+      return;
+    }
+  }
 
   // Don't let diagonal movement be faster.
   const length = Math.hypot(forward, strafe);
@@ -2335,7 +2346,7 @@ function setHint() {
   } else if (isTouchDevice) {
     hudHint.textContent = 'Left circle: walk. Drag to look. Fly button: fly. Door button: go in.';
   } else {
-    hudHint.textContent = 'WASD: walk. Shift: run. F: fly. E: door. Space up, Ctrl/C down.';
+    hudHint.textContent = 'WASD: walk. Shift: run. F: fly. E: door. Q: sit. Z: sleep. V: view.';
   }
 }
 
@@ -2347,7 +2358,9 @@ startBtn.addEventListener('click', () => {
   if (isTouchDevice) {
     joystick.classList.remove('hidden');
     flyButtons.classList.remove('hidden');
+    document.getElementById('actionBar').classList.remove('hidden');
   }
+    
   setHint();
 });
 
@@ -2448,7 +2461,7 @@ function canEnterPlot(plot) {
 function enterHouse(plot) {
   if (!canEnterPlot(plot)) return;
   const room = getInterior(plot.house);
-  inside = { plot, style: plot.house, x: room.x, z: room.z, blocks: room.blocks };
+  inside = { plot, style: plot.house, x: room.x, z: room.z, blocks: room.blocks, spots: room.spots };
   room.mesh.visible = true;
   camera.near = 0.12;                 // so you can stand close to furniture
   camera.updateProjectionMatrix();
@@ -2498,6 +2511,7 @@ function exitHouse() {
 
 // Pressing E (or the door button) does whatever the door button says.
 function useDoor() {
+  if (avatar.state !== 'stand') standUp();
   if (agreementOpen) return;   // the house paper is open
   if (doorAction === 'enter' && doorPlot) enterHouse(doorPlot);
   else if (doorAction === 'exit' && inside) exitHouse();
@@ -3113,6 +3127,216 @@ const pets = createPets({
   hint: (text) => { hudHint.textContent = text; }
 });
 // =====================================================
+// 8f. YOUR AVATAR (the body is built in js/avatar.js)
+// =====================================================
+const avatar = createAvatar({ scene });
+let thirdPerson = true;          // V switches between seeing yourself and first person
+let avatarTooClose = false;      // true when the camera is squeezed against a wall or house
+const SIT_RANGE = 1.8;           // how close you must stand to a sofa or chair to sit on it
+const SLEEP_RANGE = 2.6;         // how close you must stand to the bed to sleep in it
+const headPos = new THREE.Vector3();
+
+const sitBtn = document.getElementById('sitBtn');
+const sleepBtn = document.getElementById('sleepBtn');
+const viewBtn = document.getElementById('viewBtn');
+
+// A short message in the hint line, then back to the normal hint.
+let hintTimer = 0;
+function flashHint(text) {
+  hudHint.textContent = text;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(setHint, 3000);
+}
+
+// The closest sofa seat, chair or bed in the room you are in (or null).
+function nearestSpot(kind, range) {
+  if (!inside) return null;
+  let best = null;
+  let bestDistance = range;
+  for (const s of inside.spots) {
+    if (s.kind !== kind) continue;
+    const d = Math.hypot(inside.x + s.x - player.x, inside.z + s.z - player.z);
+    if (d < bestDistance) {
+      best = s;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+// Is this spot in the room clear of furniture and walls? (Used to find where to stand up.)
+function isFreeFloor(x, z) {
+  const lx = x - inside.x;
+  const lz = z - inside.z;
+  if (Math.abs(lx) > ROOM_HALF_W - 0.6 || Math.abs(lz) > ROOM_HALF_D - 0.6) return false;
+  for (const b of inside.blocks) {
+    if (lx > b.x0 - 0.45 && lx < b.x1 + 0.45 && lz > b.z0 - 0.45 && lz < b.z1 + 0.45) return false;
+  }
+  return true;
+}
+
+// Get up from sitting or sleeping. In a house you step out to a free spot next to the furniture.
+function standUp() {
+  if (avatar.state === 'stand') return;
+  const a = avatar.anchor;
+  if (inside && a && !a.ground) {
+    const base = Math.atan2(a.exitZ, a.exitX);
+    let placed = false;
+    for (const dist of [a.exitDist, 1.4, 1.8, 2.2, 2.6]) {
+      for (const turn of [0, 0.785, -0.785, 1.571, -1.571, 2.356, -2.356, 3.142]) {
+        const x = a.x + Math.cos(base + turn) * dist;
+        const z = a.z + Math.sin(base + turn) * dist;
+        if (isFreeFloor(x, z)) {
+          player.x = x;
+          player.z = z;
+          placed = true;
+          break;
+        }
+      }
+      if (placed) break;
+    }
+  }
+  if (avatar.state === 'sleep') player.pitch = 0.1;   // back to a normal view
+  avatar.stand();
+  setHint();
+}
+
+// Q: sit down (on a sofa or chair if you are close to one, otherwise right where you are).
+function toggleSit() {
+  if (!started || agreementOpen) return;
+  if (avatar.state !== 'stand') {
+    standUp();
+    return;
+  }
+  if (flying) {
+    flashHint('Land first (press F), then you can sit.');
+    return;
+  }
+  const s = nearestSpot('sit', SIT_RANGE);
+  if (s) {
+    avatar.sit({
+      x: inside.x + s.x, z: inside.z + s.z, y: s.y, yaw: s.a + Math.PI,
+      exitX: Math.sin(s.a), exitZ: Math.cos(s.a), exitDist: 0.95
+    });
+  } else {
+    avatar.sit({ ground: true });
+  }
+  flashHint('Sitting. Press Q or any walk key to get up.');
+}
+
+// Z: sleep (in the bed if you are close to it, otherwise lie down right where you are).
+function toggleSleep() {
+  if (!started || agreementOpen) return;
+  if (avatar.state !== 'stand') {
+    standUp();
+    return;
+  }
+  if (flying) {
+    flashHint('Land first (press F), then you can sleep.');
+    return;
+  }
+  const s = nearestSpot('sleep', SLEEP_RANGE);
+  if (s) {
+    avatar.sleep({
+      x: inside.x + s.x, z: inside.z + s.z, y: s.y, yaw: s.a + Math.PI,
+      exitX: Math.sin(s.a), exitZ: Math.cos(s.a), exitDist: 1.75
+    });
+  } else {
+    avatar.sleep({ ground: true });
+  }
+  player.pitch = thirdPerson ? -0.75 : 0.9;   // look down at yourself, or up at the sky
+  flashHint('Sleeping. Press Z or any walk key to wake up.');
+}
+
+// V: see yourself from behind, or look through your own eyes.
+function toggleView() {
+  if (!started) return;
+  thirdPerson = !thirdPerson;
+  flashHint(thirdPerson ? 'Third person: you can see yourself.' : 'First person: you see through your eyes.');
+}
+
+window.addEventListener('keydown', (e) => {
+  if (!started || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === 'KeyQ') toggleSit();
+  else if (e.code === 'KeyZ') toggleSleep();
+  else if (e.code === 'KeyV') toggleView();
+});
+sitBtn.addEventListener('click', (e) => { e.currentTarget.blur(); toggleSit(); });
+sleepBtn.addEventListener('click', (e) => { e.currentTarget.blur(); toggleSleep(); });
+viewBtn.addEventListener('click', (e) => { e.currentTarget.blur(); toggleView(); });
+
+// Can the camera be at this spot without poking through a wall, the floor or a house?
+function cameraSpotFree(x, y, z) {
+  if (y < 0.3) return false;
+  if (inside) {
+    const lx = x - inside.x;
+    const lz = z - inside.z;
+    if (Math.abs(lx) > ROOM_HALF_W - 0.25 || Math.abs(lz) > ROOM_HALF_D - 0.25) return false;
+    if (y > ROOM.height - 0.3) return false;
+    if (avatar.state === 'stand') {      // furniture (but not the piece you are sitting or lying on)
+      for (const b of inside.blocks) {
+        if (y < 1.2 && lx > b.x0 - 0.15 && lx < b.x1 + 0.15 && lz > b.z0 - 0.15 && lz < b.z1 + 0.15) return false;
+      }
+    }
+    return true;
+  }
+  return !blockedBySolid(x, z, y);
+}
+
+// Button text (only touched when it changes).
+const keyHint = (text, key) => (isTouchDevice ? text : `${text} (${key})`);
+function updateAvatarButtons() {
+  const sitText = keyHint(avatar.state === 'sit' ? 'Stand' : 'Sit', 'Q');
+  const sleepText = keyHint(avatar.state === 'sleep' ? 'Wake up' : 'Sleep', 'Z');
+  const viewText = keyHint(thirdPerson ? 'First person' : 'See me', 'V');
+  if (sitBtn.textContent !== sitText) sitBtn.textContent = sitText;
+  if (sleepBtn.textContent !== sleepText) sleepBtn.textContent = sleepText;
+  if (viewBtn.textContent !== viewText) viewBtn.textContent = viewText;
+}
+
+// Called every frame: moves your avatar, then places the camera.
+function updateAvatarAndCamera(dt) {
+  avatar.setVisible(thirdPerson && !avatarTooClose);
+  avatar.update(dt, {
+    x: player.x,
+    z: player.z,
+    ground: inside ? 0 : (isOnBridge(player.x, player.z) ? BRIDGE_TOP : ROAD_TOP),
+    altitude: Math.max(0, player.y - EYE_HEIGHT),
+    vx: vel.x,
+    vz: vel.z,
+    flying
+  });
+  updateAvatarButtons();
+
+  camera.rotation.set(player.pitch, player.yaw, 0);
+
+  if (!thirdPerson) {
+    // First person: the camera is in your eyes (or in your avatar's eyes when it sits or lies).
+    if (avatar.blend > 0.001) {
+      avatar.getHeadPosition(headPos);
+      camera.position.set(headPos.x, headPos.y + 0.04, headPos.z);
+    } else {
+      camera.position.set(player.x, player.y, player.z);
+    }
+    avatarTooClose = false;
+    return;
+  }
+
+  // Third person: the camera floats behind your head and looks at it.
+  avatar.getHeadPosition(headPos);
+  const cosP = Math.cos(player.pitch);
+  const lookX = -Math.sin(player.yaw) * cosP;
+  const lookY = Math.sin(player.pitch);
+  const lookZ = -Math.cos(player.yaw) * cosP;
+  const tx = headPos.x;
+  const ty = headPos.y + 0.12;
+  const tz = headPos.z;
+  let d = inside ? 2.6 : 4.2;
+  while (d > 0.5 && !cameraSpotFree(tx - lookX * d, ty - lookY * d, tz - lookZ * d)) d -= 0.25;
+  camera.position.set(tx - lookX * d, ty - lookY * d, tz - lookZ * d);
+  avatarTooClose = d < 0.9;    // camera squeezed against a wall: hide the avatar so it is not in your face
+}
+// =====================================================
 // 9. THE GAME LOOP (runs about 60 times per second)
 // =====================================================
 let lastTime = performance.now();
@@ -3148,9 +3372,8 @@ function animate(now) {
     }
   }
   pets.update(dt);
-  // Put the camera where the player is.
-  camera.position.set(player.x, player.y, player.z);
-  camera.rotation.set(player.pitch, player.yaw, 0);
+    // Move your avatar, then put the camera behind it (or in its eyes in first person).
+  updateAvatarAndCamera(dt);
 
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
