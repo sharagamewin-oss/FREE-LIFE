@@ -1885,7 +1885,7 @@ function getInterior(style) {
     built.group.position.set(5000 + i * 100, 0, 0);
     built.group.visible = false;
     scene.add(built.group);
-    interiors[style] = { mesh: built.group, blocks: built.blocks, spots: built.spots, x: 5000 + i * 100, z: 0 };;
+    interiors[style] = { mesh: built.group, blocks: built.blocks, spots: built.spots, x: 5000 + i * 100, z: 0 };
   }
   return interiors[style];
 }
@@ -2358,9 +2358,8 @@ startBtn.addEventListener('click', () => {
   if (isTouchDevice) {
     joystick.classList.remove('hidden');
     flyButtons.classList.remove('hidden');
-    document.getElementById('actionBar').classList.remove('hidden');
   }
-    
+  document.getElementById('actionBar').classList.remove('hidden');
   setHint();
 });
 
