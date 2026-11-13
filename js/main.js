@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-
+import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 // =====================================================
 // 1. BASIC SETUP: renderer, scene, camera
 // =====================================================
@@ -1866,135 +1866,32 @@ Object.keys(treeLists).forEach((type) => {
 });
 
 // =====================================================
-// 6f. INSIDE THE HOUSES (one furnished room for each house style)
+// 6f. INSIDE THE HOUSES (furnished rooms, built in js/interior.js)
 // =====================================================
 // The rooms are built far away from the town (x = 5000 and up). When you go inside,
 // you are moved there. When you go out, you are moved back to the door.
-const ROOM_HALF_W = 7;     // the room is 14 m wide ...
-const ROOM_HALF_D = 5;     // ... and 10 m deep
-const ROOM_HEIGHT = 3.6;
-
-const INTERIOR_THEMES = {
-  cottage:     { wall: 0xfbe3cf, floor: 0xc99560, accent: 0xc96f5a, sofa: 0xd98f7a, trim: 0xfff4e0 },
-  treehouse:   { wall: 0xd9a566, floor: 0xa8764a, accent: 0x6dbb5a, sofa: 0x7fa86a, trim: 0x8a5a3a },
-  modern:      { wall: 0xf4efe6, floor: 0xcfc3ae, accent: 0x3f8f8a, sofa: 0x4a4440, trim: 0xe9dfd0 },
-  traditional: { wall: 0xe2a97c, floor: 0x9b6a45, accent: 0x8d3b32, sofa: 0xb5523b, trim: 0xfff4e0 }
-};
-
-function buildInterior(style) {
-  const t = INTERIOR_THEMES[style];
-  const b = makeBuilder();
-  const hw = ROOM_HALF_W;
-  const hd = ROOM_HALF_D;
-  const H = ROOM_HEIGHT;
-  const WOOD = 0xb98a5a;
-  const WOOD_DK = 0x7a5237;
-  const GLASS_IN = 0xdff4ff;
-  const books = [0xd9534f, 0x5bc0de, 0xf0ad4e, 0x5cb85c, 0x9b59b6];
-
-  // Floor, ceiling and four walls (the floor's top is at y = 0)
-  b.box(t.floor, 15, 0.3, 11, 0, -0.3, 0);
-  b.box(t.trim, 15, 0.3, 11, 0, H, 0);
-  b.box(t.wall, 15, H, 0.4, 0, 0, -hd - 0.2);   // north wall
-  b.box(t.wall, 15, H, 0.4, 0, 0, hd + 0.2);    // south wall (the door is here)
-  b.box(t.wall, 0.4, H, 10, -hw - 0.2, 0, 0);   // west wall
-  b.box(t.wall, 0.4, H, 10, hw + 0.2, 0, 0);    // east wall
-
-  // Skirting boards along the bottom of the walls
-  b.box(t.trim, 14, 0.25, 0.1, 0, 0, -hd + 0.05);
-  b.box(t.trim, 0.1, 0.25, 10, -hw + 0.05, 0, 0);
-  b.box(t.trim, 0.1, 0.25, 10, hw - 0.05, 0, 0);
-
-  // The door (south wall, in the middle)
-  b.box(t.trim, 2.3, 2.9, 0.1, 0, 0, hd - 0.05);
-  b.box(WOOD_DK, 1.8, 2.5, 0.12, 0, 0, hd - 0.07);
-  b.box(0xf2c94c, 0.12, 0.12, 0.08, 0.6, 1.2, hd - 0.15);
-
-  // Windows: two on the north wall, one on the east wall (soft daylight colour)
-  [-3.6, 3.6].forEach((x) => {
-    b.box(t.trim, 3.2, 2.0, 0.08, x, 0.9, -hd + 0.04);
-    b.box(GLASS_IN, 2.8, 1.6, 0.1, x, 1.1, -hd + 0.05);
-  });
-  b.box(t.trim, 0.08, 2.0, 3.2, hw - 0.04, 0.9, 0.5);
-  b.box(GLASS_IN, 0.1, 1.6, 2.8, hw - 0.05, 1.1, 0.5);
-
-  // A picture above the sofa
-  b.box(WOOD_DK, 1.8, 1.2, 0.06, 0, 1.5, -hd + 0.03);
-  b.box(t.accent, 1.5, 0.9, 0.08, 0, 1.65, -hd + 0.04);
-
-  // Rug
-  b.box(t.accent, 6, 0.04, 4, 0, 0, 0.6);
-
-  // Sofa (against the north wall)
-  b.box(t.sofa, 3.6, 0.7, 1.3, 0, 0, -hd + 1.3);        // seat
-  b.box(t.sofa, 3.6, 0.9, 0.35, 0, 0.7, -hd + 0.7);     // back
-  b.box(t.sofa, 0.4, 1.1, 1.3, -1.9, 0, -hd + 1.3);     // arms
-  b.box(t.sofa, 0.4, 1.1, 1.3, 1.9, 0, -hd + 1.3);
-
-  // Coffee table
-  b.box(WOOD, 1.8, 0.1, 1.0, 0, 0.5, 0.2);
-  b.box(WOOD_DK, 0.12, 0.5, 0.8, -0.8, 0, 0.2);
-  b.box(WOOD_DK, 0.12, 0.5, 0.8, 0.8, 0, 0.2);
-
-  // Bookshelf (west wall) with books
-  b.box(WOOD_DK, 0.6, 2.6, 3.4, -hw + 0.3, 0, -1);
-  for (let row = 0; row < 3; row++) {
-    for (let i = 0; i < 7; i++) {
-      b.box(books[(row + i) % books.length], 0.35, 0.55, 0.28, -hw + 0.65, 0.2 + row * 0.8, -2.4 + i * 0.42);
-    }
-  }
-
-  // Bed (east wall, in the north corner)
-  const bedX = hw - 1.8;
-  b.box(WOOD, 2.6, 0.5, 3.6, bedX, 0, -2.8);            // frame
-  b.box(0xfff4e0, 2.4, 0.3, 3.4, bedX, 0.5, -2.8);      // mattress
-  b.box(t.accent, 2.4, 0.12, 2.2, bedX, 0.8, -2.3);     // blanket
-  b.box(0xffffff, 1.0, 0.2, 0.7, bedX, 0.8, -4.2);      // pillow
-  b.box(WOOD_DK, 2.6, 1.3, 0.2, bedX, 0, -4.7);         // headboard
-
-  // Dining table and two chairs (south-east)
-  b.box(WOOD, 2.6, 0.12, 1.6, 3.8, 0.75, 2.4);
-  [[-1.1, -0.6], [1.1, -0.6], [-1.1, 0.6], [1.1, 0.6]].forEach(([ox, oz]) => {
-    b.box(WOOD_DK, 0.14, 0.75, 0.14, 3.8 + ox, 0, 2.4 + oz);
-  });
-  [-1.3, 1.3].forEach((oz) => {
-    b.box(t.accent, 0.7, 0.12, 0.7, 3.8, 0.45, 2.4 + oz);
-    b.box(WOOD_DK, 0.1, 0.45, 0.1, 3.5, 0, 2.4 + oz - 0.28);
-    b.box(WOOD_DK, 0.1, 0.45, 0.1, 4.1, 0, 2.4 + oz - 0.28);
-    b.box(t.accent, 0.7, 0.6, 0.1, 3.8, 0.55, 2.4 + oz + (oz < 0 ? -0.3 : 0.3));
-  });
-
-  // Plants in the two south corners
-  [[-hw + 0.8, hd - 0.8], [hw - 0.8, hd - 0.8]].forEach(([x, z]) => {
-    b.cyl(0xd7a77a, 0.8, 0.7, x, 0, z);
-    b.ball(LEAF, 1.5, x, 1.4, z);
-  });
-
-  // Standing lamp and a hanging lamp
-  b.cyl(WOOD_DK, 0.1, 1.6, -3.2, 0, -hd + 0.8);
-  b.cyl(0xfff0b0, 0.7, 0.5, -3.2, 1.5, -hd + 0.8);
-  b.cyl(WOOD_DK, 0.06, 1.0, 0, H - 1.0, 0.6);
-  b.ball(0xfff0b0, 1.0, 0, H - 1.15, 0.6, 0.7);
-
-  // Extra for the treehouse: a tree trunk through the room and leaves on the ceiling
-  if (style === 'treehouse') {
-    b.cyl(0x7d5232, 1.8, H, -4.5, 0, 2.5);
-    [[-5.5, -3.5], [5.5, 3.5], [-5.5, 3.5]].forEach(([x, z]) => b.ball(0x6dbb5a, 2.6, x, H - 0.4, z, 0.6));
-  }
-
-  return b.build();
-}
+const ROOM_HALF_W = ROOM.halfW;   // the room is 14 m wide ...
+const ROOM_HALF_D = ROOM.halfD;   // ... and 10 m deep
 
 const interiors = {};
-HOUSE_STYLES.forEach((style, i) => {
-  const mesh = new THREE.Mesh(buildInterior(style), houseMaterial);
-  mesh.position.set(5000 + i * 100, 0, 0);
-  mesh.visible = false;
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  interiors[style] = { mesh, x: 5000 + i * 100, z: 0 };
-});
 
+// Builds the room for a house style the first time it is needed.
+function getInterior(style) {
+  if (!interiors[style]) {
+    const i = HOUSE_STYLES.indexOf(style);
+    const built = buildInterior(style);
+    built.group.position.set(5000 + i * 100, 0, 0);
+    built.group.visible = false;
+    scene.add(built.group);
+    interiors[style] = { mesh: built.group, blocks: built.blocks, x: 5000 + i * 100, z: 0 };
+  }
+  return interiors[style];
+}
+
+// Get the rooms ready one by one, quietly, while you walk around outside.
+HOUSE_STYLES.forEach((style, i) => {
+  setTimeout(() => getInterior(style), 4000 + i * 2500);
+});
 // =====================================================
 // 7. PLAYER + CONTROLS (keyboard, mouse, touch)
 // =====================================================
@@ -2010,7 +1907,7 @@ let landing = false;  // true while gently coming down to land
 let vy = 0;           // up/down speed
 const vel = { x: 0, z: 0 }; // sideways speed (used to make flying smooth)
 
-// Inside a house? null = outside. Otherwise { plot, style, x, z } (x, z = the room's middle).
+// Inside a house? null = outside. Otherwise { plot, style, x, z, blocks } (x, z = the room's middle).
 let inside = null;
 
 // Touch buttons for up/down (true while a finger is holding them)
@@ -2407,6 +2304,7 @@ function updatePlayer(dt) {
     const maxZ = ROOM_HALF_D - 0.6;
     player.x = Math.max(inside.x - maxX, Math.min(inside.x + maxX, player.x));
     player.z = Math.max(inside.z - maxZ, Math.min(inside.z + maxZ, player.z));
+    pushOutOfFurniture(inside.blocks, inside.x, inside.z, player);   // furniture is solid
   } else {
     // Keep the player inside the world.
     const distance = Math.hypot(player.x, player.z);
@@ -2548,9 +2446,11 @@ function canEnterPlot(plot) {
 
 function enterHouse(plot) {
   if (!canEnterPlot(plot)) return;
-  const room = interiors[plot.house];
-  inside = { plot, style: plot.house, x: room.x, z: room.z };
+  const room = getInterior(plot.house);
+  inside = { plot, style: plot.house, x: room.x, z: room.z, blocks: room.blocks };
   room.mesh.visible = true;
+  camera.near = 0.12;                 // so you can stand close to furniture
+  camera.updateProjectionMatrix();
 
   // No flying inside, and stop any movement.
   flying = false;
@@ -2565,7 +2465,7 @@ function enterHouse(plot) {
   player.z = room.z + ROOM_HALF_D - 1.4;
   player.y = EYE_HEIGHT;
   player.yaw = 0;
-  player.pitch = 0;
+  player.pitch = -0.12;               // look a little down into the room
 
   updateHouseLOD();
   setHint();
@@ -2574,6 +2474,8 @@ function enterHouse(plot) {
 function exitHouse() {
   const plot = inside.plot;
   interiors[inside.style].mesh.visible = false;
+  camera.near = 0.5;
+  camera.updateProjectionMatrix();
 
   // Stand just outside the door, looking away from the house.
   const spot = DOOR_SPOTS[plot.house];
