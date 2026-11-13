@@ -119,7 +119,28 @@ export async function buyPlot(plotId, house) {
     });
   });
 }
+// Sell a house back: gives the coins back and frees the plot, all at once.
+// Errors: not-signed-in, no-wallet, not-owner, no-price
+export async function sellPlot(plotId, requestIds = []) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('not-signed-in');
 
+  const userRef = doc(db, 'users', user.uid);
+  const plotRef = doc(db, 'plots', plotId);
+
+  await runTransaction(db, async (tx) => {
+    const u = await tx.get(userRef);
+    const p = await tx.get(plotRef);
+    if (!u.exists()) throw new Error('no-wallet');
+    if (!p.exists() || p.data().ownerId !== user.uid) throw new Error('not-owner');
+    const price = p.data().price;
+    if (price == null) throw new Error('no-price');
+
+    tx.update(userRef, { coins: u.data().coins + price, plotId: null });
+    tx.delete(plotRef);
+    requestIds.forEach((id) => tx.delete(doc(db, 'requests', id)));
+  });
+}
 // ---------- Permission to enter a house ----------
 
 // Ask the owner of a house for permission to enter.
