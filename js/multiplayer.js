@@ -12,7 +12,7 @@ import {
 
 // ---------- 1) PASTE YOUR REALTIME DATABASE URL HERE ----------
 // Firebase console > Build > Realtime Database > the link shown at the top of the Data tab.
-const DATABASE_URL = 'https://console.firebase.google.com/project/free-life-173ad/database/free-life-173ad-default-rtdb/data/~2F';
+const DATABASE_URL = 'https://free-life-173ad-default-rtdb.asia-southeast1.firebasedatabase.app/';
 
 // ---------- 2) SETTINGS (you can change these) ----------
 const SEND_EVERY = 0.25;     // seconds between position updates while moving
