@@ -20,7 +20,10 @@ service cloud.firestore {
         && resource.data.ownerId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'memberIds'])
         && request.resource.data.get('memberIds', []).size() <= 6;
-      allow delete: if false;
+            // The owner can delete the plot only when selling (the player's plotId becomes null).
+      allow delete: if request.auth != null
+        && resource.data.ownerId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.plotId == null;
     }
 
     // "Can I enter your house?" requests. Only the asker and the owner can see them.
@@ -58,6 +61,15 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/plots/$(request.resource.data.plotId)).data.ownerId == request.auth.uid
         && request.resource.data.coins == resource.data.coins
              - getAfter(/databases/$(database)/documents/plots/$(request.resource.data.plotId)).data.price;
+      // Selling a house: the coins go up by exactly the price, and plotId becomes null.
+      allow update: if request.auth != null && request.auth.uid == uid
+        && resource.data.plotId is string
+        && request.resource.data.keys().hasOnly(['coins', 'plotId'])
+        && request.resource.data.plotId == null
+        && request.resource.data.coins is int
+        && request.resource.data.coins == resource.data.coins
+             + get(/databases/$(database)/documents/plots/$(resource.data.plotId)).data.price;
+
 
       allow delete: if false;
     }
