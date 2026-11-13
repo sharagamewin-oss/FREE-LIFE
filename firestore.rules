@@ -75,3 +75,26 @@ service cloud.firestore {
     }
   }
 }
+    // Adoptable pets. Anyone can see who adopted which pet. Each player can adopt one.
+    match /pets/{petId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerId', 'ownerName', 'type', 'name', 'adoptedAt'])
+        && request.resource.data.type in ['dog', 'cat', 'bunny', 'duckling']
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 16
+        && getAfter(/databases/$(database)/documents/petOwners/$(request.auth.uid)).data.petId == petId;
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Which pet a player has (this is what limits it to one pet per player).
+    match /petOwners/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['petId'])
+        && getAfter(/databases/$(database)/documents/pets/$(request.resource.data.petId)).data.ownerId == request.auth.uid;
+      allow update: if false;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
