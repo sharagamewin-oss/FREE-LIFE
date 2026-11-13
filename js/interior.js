@@ -514,7 +514,14 @@ function lamp(x, y, z, col, intensity, radius) {
     c: hex(col), i: intensity, r: radius
   });
 }
-
+function spot(kind, lx, ly, lz) {
+  R.spots.push({
+    kind, y: ly,
+    x: T.c * lx + T.s * lz + T.x,
+    z: -T.s * lx + T.c * lz + T.z,
+    a: T.a
+  });
+}
 // =====================================================
 // 5. FURNITURE (every piece is built facing +z, with its middle on the floor)
 // =====================================================
@@ -531,6 +538,7 @@ function sofa(th, w = 3.2) {
     const x = -w / 2 + 0.3 + cw * (i + 0.5);
     box('fabric', scaleHex(fab, 1.06), cw - 0.03, 0.2, 0.7, x, 0.5, 0.13);          // seat cushion
     box('fabric', scaleHex(fab, 1.03), cw - 0.05, 0.46, 0.2, x, 0.7, -0.14);        // back cushion
+    spot('sit', x, 0.64, 0.13);
   }
   [-1, 1].forEach((sd) => {
     box('fabric', fab, 0.3, 0.7, 0.95, sd * (w / 2 - 0.15), 0.14, 0);               // arm
@@ -545,6 +553,7 @@ function sofa(th, w = 3.2) {
 }
 
 function chair(th) {
+  spot('sit', 0, 0.5, 0.01);
   box('wood', th.wood, 0.46, 0.05, 0.46, 0, 0.44, 0);
   [[-0.19, -0.19], [0.19, -0.19], [-0.19, 0.19], [0.19, 0.19]].forEach(([x, z]) => cyl('wood', th.dark, 0.045, 0.44, x, 0, z, 6));
   box('wood', th.wood, 0.05, 0.5, 0.05, -0.19, 0.49, -0.2, true);
@@ -773,6 +782,7 @@ function tvWall(th) {                                                           
 
 function bed(th) {                                                                    // head is at local -z (the wall)
   const f = th.wood;
+  spot('sleep', 0, 0.72, 0.05);
   box('wood', f, 1.7, 0.3, 2.1, 0, 0.12, 0.05);
   box('wood', th.dark, 1.8, 1.25, 0.1, 0, 0, -1.0);                                   // headboard
   box('wood', th.dark, 1.8, 0.5, 0.08, 0, 0, 1.1);                                    // foot board
@@ -1123,11 +1133,11 @@ export function bakeRoom(style) {
   let seed = 0;
   for (let i = 0; i < style.length; i++) seed = seed * 31 + style.charCodeAt(i);
   T = { a: 0, c: 1, s: 0, x: 0, z: 0 };
-  R = { th, g: {}, occ: [], blocks: [], lamps: [], win: [] };
+  R = { th, g: {}, occ: [], blocks: [], lamps: [], win: [],spots: [] };
   makeGroups(th, style, rng(seed));
   layout(style);
   bakeLight();
-  const room = { groups: R.g, blocks: R.blocks };
+  const room = { groups: R.g, blocks: R.blocks, spots: R.spots };
   R = null;
   return room;
 }
@@ -1166,7 +1176,7 @@ export function buildInterior(style) {
     mesh.frustumCulled = false;
     group.add(mesh);
   });
-  return { group, blocks: room.blocks };
+  return { group, blocks: room.blocks, spots: room.spots };
 }
 
 // Pushes the player out of any furniture. (rx, rz) = the room's middle in the world.
