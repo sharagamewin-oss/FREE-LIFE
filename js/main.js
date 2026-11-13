@@ -3566,7 +3566,12 @@ function animate(now) {
   pets.update(dt);
     // Move your avatar, then put the camera behind it (or in its eyes in first person).
   updateAvatarAndCamera(dt);
-  if (started) multiplayer.update(dt);
+  if (started && multiplayer) {
+  try { multiplayer.update(dt); }
+  catch (err) {
+  if (!window.__mpWarned) { console.warn('Multiplayer update error:', err); window.__mpWarned = true; }
+    }
+  }
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
 
