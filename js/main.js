@@ -3339,7 +3339,111 @@ function flashHint(text) {
   clearTimeout(hintTimer);
   hintTimer = setTimeout(setHint, 3000);
 }
+// =====================================================
+// JOB: the Sunny Café counter (stand close, press J or tap the button, wait, get paid)
+// =====================================================
+const JOB = { x: 5.2, z: 34, range: 3.2, seconds: 15, pay: 75 };   // pay must match JOB_PAY and the rules
+let jobLeft = 0;          // seconds left in the current shift (0 = not working)
+let jobPaying = false;    // true while waiting for Firebase to pay
 
+(function buildJobBooth() {
+  const wood = new THREE.MeshLambertMaterial({ color: 0xb5793f });
+  const red = new THREE.MeshLambertMaterial({ color: 0xd9534f });
+  const cream = new THREE.MeshLambertMaterial({ color: 0xfff1d0 });
+  const booth = new THREE.Group();
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.0, 0.9), wood);
+  counter.position.set(0, 0.5, 0);
+  const top = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.1, 1.1), cream);
+  top.position.set(0, 1.05, 0);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.15, 1.5), red);
+  roof.position.set(0, 2.5, 0);
+  const postA = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.5, 0.1), wood);
+  postA.position.set(-1.1, 1.8, -0.5);
+  const postB = postA.clone();
+  postB.position.set(1.1, 1.8, -0.5);
+  booth.add(counter, top, roof, postA, postB);
+
+  // A sign above the booth
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff1d0';
+  g.fillRect(0, 0, 512, 128);
+  g.fillStyle = '#7a3b22';
+  g.font = 'bold 64px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('SUNNY CAFE', 256, 66);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), new THREE.MeshBasicMaterial({ map: tex }));
+  sign.position.set(0, 3.1, 0.76);
+  booth.add(sign);
+
+  booth.position.set(JOB.x, 0, JOB.z);
+  booth.rotation.y = -Math.PI / 2;        // the front faces the road (towards -x). Change if it faces the wrong way.
+  scene.add(booth);
+})();
+
+const jobBtn = document.createElement('button');
+jobBtn.style.cssText = 'position:fixed;left:50%;bottom:150px;transform:translateX(-50%);z-index:30;display:none;' +
+  'font-family:inherit;font-size:16px;font-weight:bold;color:#7a3b22;border:none;border-radius:999px;' +
+  'padding:12px 22px;box-shadow:0 4px 0 rgba(224,165,106,.9);cursor:pointer;background:#fff1d0;';
+document.body.appendChild(jobBtn);
+
+function jobNear() {
+  return started && !inside && !flying && !agreementOpen &&
+    Math.hypot(player.x - JOB.x, player.z - JOB.z) < JOB.range;
+}
+
+function startJob() {
+  if (jobLeft > 0 || jobPaying || !jobNear()) return;
+  if (!currentUser) { flashHint('Sign in with Google to work and earn coins.'); return; }
+  jobLeft = JOB.seconds;
+}
+
+async function finishJob() {
+  jobLeft = 0;
+  jobPaying = true;
+  try {
+    if (!fb) throw new Error('Firebase not ready');
+    await fb.payForWork();
+    flashHint(`Shift done! You earned ${JOB.pay} coins.`);
+  } catch (err) {
+    console.warn('Could not get paid:', err);
+    flashHint('Could not pay you this time. Try again in a few seconds.');
+  }
+  jobPaying = false;
+}
+
+// Called every frame.
+function updateJob(dt) {
+  const near = jobNear();
+  if (jobLeft > 0) {
+    if (!near || avatar.state !== 'stand') {
+      jobLeft = 0;
+      flashHint('You left the counter, so the shift was cancelled.');
+    } else {
+      jobLeft -= dt;
+      if (jobLeft <= 0) finishJob();
+    }
+  }
+  jobBtn.style.display = near ? 'block' : 'none';
+  if (!near) return;
+  if (jobLeft > 0) {
+    const done = Math.round((1 - jobLeft / JOB.seconds) * 100);
+    jobBtn.textContent = `Working... ${Math.ceil(jobLeft)}s`;
+    jobBtn.style.background = `linear-gradient(to right, #9bd48f ${done}%, #fff1d0 ${done}%)`;
+  } else {
+    jobBtn.textContent = jobPaying ? 'Getting paid...' : `Work at the cafe: +${JOB.pay} coins${isTouchDevice ? '' : ' (J)'}`;
+    jobBtn.style.background = '#fff1d0';
+  }
+}
+
+jobBtn.addEventListener('click', startJob);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyJ' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) startJob();
+});
 // The closest sofa seat, chair or bed in the room you are in (or null).
 function nearestSpot(kind, range) {
   if (!inside) return null;
@@ -3571,6 +3675,10 @@ function animate(now) {
     catch (err) {
       if (!window.__mpWarned) { console.warn('Multiplayer update error:', err); window.__mpWarned = true; }
     }
+  }
+  if (started) {
+  try { updateJob(dt); }
+  catch (err) { if (!window.__jobWarned) { console.warn('Job error:', err); window.__jobWarned = true; } }
   }
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
