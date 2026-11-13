@@ -54,7 +54,8 @@ service cloud.firestore {
       // Buying a house: the coins go down by exactly the price, and only once.
       allow update: if request.auth != null && request.auth.uid == uid
         && resource.data.plotId == null
-        && request.resource.data.keys().hasOnly(['coins', 'plotId'])
+        && request.resource.data.keys().hasOnly(['coins', 'plotId', 'lastWork'])
+        && request.resource.data.get('lastWork', null) == resource.data.get('lastWork', null)
         && request.resource.data.plotId is string
         && request.resource.data.coins is int
         && request.resource.data.coins >= 0
@@ -64,11 +65,22 @@ service cloud.firestore {
       // Selling a house: the coins go up by exactly the price, and plotId becomes null.
       allow update: if request.auth != null && request.auth.uid == uid
         && resource.data.plotId is string
-        && request.resource.data.keys().hasOnly(['coins', 'plotId'])
+        && request.resource.data.keys().hasOnly(['coins', 'plotId', 'lastWork'])
+        && request.resource.data.get('lastWork', null) == resource.data.get('lastWork', null)
         && request.resource.data.plotId == null
         && request.resource.data.coins is int
         && request.resource.data.coins == resource.data.coins
              + get(/databases/$(database)/documents/plots/$(resource.data.plotId)).data.price;
+
+      // Earning coins at a job: at most +75, and at least 12 seconds after the last payment.
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['coins', 'plotId', 'lastWork'])
+        && request.resource.data.plotId == resource.data.plotId
+        && request.resource.data.coins is int
+        && request.resource.data.coins > resource.data.coins
+        && request.resource.data.coins <= resource.data.coins + 75
+        && request.resource.data.lastWork == request.time
+        && request.time >= resource.data.get('lastWork', timestamp.date(2000, 1, 1)) + duration.value(12, 's');
 
       allow delete: if false;
     }
