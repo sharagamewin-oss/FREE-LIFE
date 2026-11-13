@@ -252,3 +252,16 @@ export async function releasePet(petId) {
   batch.delete(doc(db, 'petOwners', user.uid));
   await batch.commit();
 }
+// ---------- Jobs ----------
+// Pay for one finished shift. The pay and the 12 second gap are also checked in firestore.rules.
+export const JOB_PAY = 75;
+export async function payForWork() {
+  const user = auth.currentUser;
+  if (!user) throw new Error('not-signed-in');
+  const userRef = doc(db, 'users', user.uid);
+  await runTransaction(db, async (tx) => {
+    const u = await tx.get(userRef);
+    if (!u.exists()) throw new Error('no-wallet');
+    tx.update(userRef, { coins: u.data().coins + JOB_PAY, lastWork: serverTimestamp() });
+  });
+}
