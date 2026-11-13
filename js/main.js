@@ -91,7 +91,32 @@ const sunGlow = new THREE.Mesh(
 );
 sunGlow.position.copy(sunPosition);
 skyGroup.add(sunGlow);
+// The moon (opposite the sun) and the stars. They fade in at night.
+const moon = new THREE.Mesh(
+  new THREE.SphereGeometry(38, 20, 14),
+  new THREE.MeshBasicMaterial({ color: 0xe8eeff, fog: false })
+);
+skyGroup.add(moon);
 
+const starCount = 450;
+const starPositions = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const y = Math.random() * 0.95 + 0.05;           // upper half of the sky only
+  const r = Math.sqrt(1 - y * y);
+  starPositions[i * 3] = Math.cos(a) * r * 1400;
+  starPositions[i * 3 + 1] = y * 1400;
+  starPositions[i * 3 + 2] = Math.sin(a) * r * 1400;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+const starMaterial = new THREE.PointsMaterial({
+  color: 0xffffff, size: 2.5, sizeAttenuation: false,
+  transparent: true, opacity: 0, fog: false, depthWrite: false
+});
+const stars = new THREE.Points(starGeo, starMaterial);
+stars.frustumCulled = false;
+skyGroup.add(stars);
 // Puffy cartoon clouds (a few soft blobs each, sharing one shape and one material).
 const clouds = new THREE.Group();
 const cloudMaterial = new THREE.MeshLambertMaterial({
@@ -135,7 +160,140 @@ scene.add(hemiLight);
 const sunLight = new THREE.DirectionalLight(0xfff0cc, 2.2);
 sunLight.position.copy(sunDirection).multiplyScalar(100);
 scene.add(sunLight);
+// A soft blue moonlight so the night is dark but you can still see.
+const moonLight = new THREE.DirectionalLight(0x9db4ff, 0);
+scene.add(moonLight);
 
+// =====================================================
+// 3b. SUNRISE AND SUNSET (follows the real clock of the player's device)
+// =====================================================
+const SUNRISE_HOUR = 5;    // 5 AM  - the sun comes up
+const SUNSET_HOUR = 18;    // 6 PM  - the sun goes down (change these two numbers any time)
+
+// Test the sky without waiting: add  ?hour=17.5  to the web address.
+// Add  &speed=600  to make time run fast (600 = one real second is ten game minutes).
+const urlParams = new URLSearchParams(window.location.search);
+const FAKE_HOUR = urlParams.get('hour') === null ? null : Number(urlParams.get('hour'));
+const TIME_SPEED = Number(urlParams.get('speed')) || 1;
+const timeStartMs = Date.now();
+
+function getGameHour() {
+  if (FAKE_HOUR === null || Number.isNaN(FAKE_HOUR)) {
+    const d = new Date();                                  // the real time
+    return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+  }
+  const passed = ((Date.now() - timeStartMs) / 3600000) * TIME_SPEED;
+  return (FAKE_HOUR + passed) % 24;
+}
+
+// The sky colours and light strength for each sun height (-1 = below, 0 = horizon, 1 = overhead).
+const SKY_STOPS = [
+  { e: -0.25, horizon: 0x0a1020, middle: 0x070c1b, top: 0x03050d, hemiSky: 0x5a6a9a, hemiGround: 0x141c14, hemi: 0.7, sun: 0.0, sunColor: 0xff8a4a },
+  { e: -0.08, horizon: 0x1c2145, middle: 0x10173a, top: 0x070b1f, hemiSky: 0x6a74a8, hemiGround: 0x1c2418, hemi: 0.8, sun: 0.0, sunColor: 0xff8a4a },
+  { e: 0.0,   horizon: 0xff9a5c, middle: 0x8a6a9a, top: 0x2f4a86, hemiSky: 0xffc9a0, hemiGround: 0x6a7a4a, hemi: 1.2, sun: 0.7, sunColor: 0xff9a5a },
+  { e: 0.12,  horizon: 0xffd3a0, middle: 0xa7c7e6, top: 0x4f8fd6, hemiSky: 0xfff0e0, hemiGround: 0x8ab864, hemi: 1.8, sun: 1.5, sunColor: 0xffd9a8 },
+  { e: 0.4,   horizon: 0xcfe9f7, middle: 0xa6d8f2, top: 0x5aaae6, hemiSky: 0xffffff, hemiGround: 0x9bd36b, hemi: 2.4, sun: 2.2, sunColor: 0xfff0cc },
+  { e: 1.0,   horizon: 0xcfe9f7, middle: 0xa6d8f2, top: 0x5aaae6, hemiSky: 0xffffff, hemiGround: 0x9bd36b, hemi: 2.4, sun: 2.2, sunColor: 0xfff0cc }
+];
+const skyNow = {
+  horizon: new THREE.Color(), middle: new THREE.Color(), top: new THREE.Color(),
+  hemiSky: new THREE.Color(), hemiGround: new THREE.Color(), sunColor: new THREE.Color(),
+  hemi: 2.4, sun: 2.2
+};
+const _mix = new THREE.Color();
+
+function mixStops(e) {
+  let i = 0;
+  while (i < SKY_STOPS.length - 2 && e > SKY_STOPS[i + 1].e) i++;
+  const A = SKY_STOPS[i], B = SKY_STOPS[i + 1];
+  const k = Math.min(Math.max((e - A.e) / (B.e - A.e), 0), 1);
+  ['horizon', 'middle', 'top', 'hemiSky', 'hemiGround', 'sunColor'].forEach((key) => {
+    skyNow[key].set(A[key]).lerp(_mix.set(B[key]), k);
+  });
+  skyNow.hemi = A.hemi + (B.hemi - A.hemi) * k;
+  skyNow.sun = A.sun + (B.sun - A.sun) * k;
+}
+
+// Remember how high each dot of the sky dome is, so we can repaint it quickly.
+const skyHeights = new Float32Array(skyPos.count);
+for (let i = 0; i < skyPos.count; i++) {
+  skyHeights[i] = Math.max(skyPos.getY(i) / SKY_RADIUS, 0);
+}
+
+function paintSky() {
+  const colorAttr = skyGeo.attributes.color;
+  for (let i = 0; i < skyHeights.length; i++) {
+    const h = skyHeights[i];
+    if (h < 0.25) {
+      tmp.copy(skyNow.horizon).lerp(skyNow.middle, h / 0.25);
+    } else {
+      tmp.copy(skyNow.middle).lerp(skyNow.top, Math.min((h - 0.25) / 0.6, 1));
+    }
+    colorAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
+  }
+  colorAttr.needsUpdate = true;
+}
+
+let skyPaintTimer = 99;
+function updateSky(dt) {
+  const hour = getGameHour();
+  const dayLength = SUNSET_HOUR - SUNRISE_HOUR;
+  const nightLength = 24 - dayLength;
+
+  // angle 0 = sunrise, PI/2 = noon, PI = sunset, 1.5 PI = midnight
+  let angle;
+  if (hour >= SUNRISE_HOUR && hour <= SUNSET_HOUR) {
+    angle = Math.PI * ((hour - SUNRISE_HOUR) / dayLength);
+  } else {
+    const intoNight = hour > SUNSET_HOUR ? hour - SUNSET_HOUR : hour + 24 - SUNSET_HOUR;
+    angle = Math.PI + Math.PI * (intoNight / nightLength);
+  }
+
+  // The sun rises in the east (+x) and sets in the west (-x).
+  sunDirection.set(Math.cos(angle), Math.sin(angle) * 0.85, -0.3).normalize();
+  const e = sunDirection.y;
+  mixStops(e);
+
+  // Sun and moon positions
+  sunPosition.copy(sunDirection).multiplyScalar(1200);
+  sunCore.position.copy(sunPosition);
+  sunGlow.position.copy(sunPosition);
+  const sunVisible = e > -0.12;
+  sunCore.visible = sunVisible;
+  sunGlow.visible = sunVisible;
+  const low = 1 - Math.min(Math.max(e / 0.3, 0), 1);          // 1 at the horizon, 0 high up
+  sunCore.material.color.set(0xfff6c8).lerp(_mix.set(0xff6a20), low);
+  sunGlow.material.color.set(0xffe9a0).lerp(_mix.set(0xff7a30), low);
+  sunCore.scale.setScalar(1 + low * 0.35);
+  sunGlow.scale.setScalar(1 + low * 0.5);
+
+  moon.position.copy(sunDirection).multiplyScalar(-1200);
+  moon.visible = moon.position.y > -100;
+  const night = Math.min(Math.max((-e - 0.02) / 0.2, 0), 1);   // 0 in the day, 1 deep night
+  starMaterial.opacity = night;
+  stars.visible = night > 0.01;
+
+  // Lights
+  hemiLight.color.copy(skyNow.hemiSky);
+  hemiLight.groundColor.copy(skyNow.hemiGround);
+  hemiLight.intensity = skyNow.hemi;
+  sunLight.color.copy(skyNow.sunColor);
+  sunLight.intensity = skyNow.sun;
+  sunLight.position.copy(sunDirection).multiplyScalar(100);
+  moonLight.position.copy(sunDirection).multiplyScalar(-100);
+  moonLight.intensity = 0.6 * night;
+
+  // Clouds go grey-dark at night
+  cloudMaterial.emissiveIntensity = 0.4 * Math.min(Math.max((e + 0.1) / 0.4, 0.05), 1);
+
+  // Sky dome and fog colours (repainted 4 times a second, that is plenty)
+  skyPaintTimer += dt;
+  if (skyPaintTimer > 0.25) {
+    skyPaintTimer = 0;
+    paintSky();
+    scene.fog.color.copy(skyNow.horizon);
+  }
+}
 // =====================================================
 // 4. GROUND (vast grass with a soft, patchy texture)
 // =====================================================
@@ -3377,6 +3535,8 @@ function animate(now) {
   // The sky follows the camera so it never gets closer.
   skyGroup.position.copy(camera.position);
 
+  // Sunrise, sunset and night, using the real time.
+  updateSky(dt);
   // Clouds drift slowly to the right, then wrap around.
   clouds.children.forEach((cloud) => {
     cloud.position.x += dt * 3;
