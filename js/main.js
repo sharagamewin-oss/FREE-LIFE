@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 import { createPets } from './pets.js';
 import { BUILDINGS, createBuildings } from './buildings/index.js';
+import { floorAt, floorIndexAt, pushOut as pushOutBuilding, ceilingAt } from './buildings/walk.js';
 import { createAvatar } from './avatar.js';
 
 // =====================================================
@@ -2549,7 +2550,9 @@ function updatePlayer(dt) {
     }
   }
 
-  if (inside) {
+  if (inside && inside.kind === 'building') {
+    updateBuildingWalk(dt);
+  } else if (inside) {
     // Keep the player inside the room's walls.
     const maxX = ROOM_HALF_W - 0.6;
     const maxZ = ROOM_HALF_D - 0.6;
@@ -2580,7 +2583,9 @@ const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
 
 // The small help text at the top left.
 function setHint() {
-  if (inside) {
+  if (inside && inside.kind === 'building') {
+    hudHint.textContent = `Inside ${inside.building.name}. Walk up the stairs to the other floors. At the door on the ground floor, press E to go out.`;
+  } else if (inside) {
     hudHint.textContent = 'Inside the house. Walk to the door and press E (or tap the button) to go out.';
   } else if (isTouchDevice) {
     hudHint.textContent = 'Left circle: walk. Drag to look. Fly button: fly. Door button: go in.';
@@ -2607,7 +2612,9 @@ let lastAltitudeText = '';
 function updateAltitudeDisplay() {
   const metres = Math.max(0, Math.round(player.y - EYE_HEIGHT));
   let text;
-  if (inside) {
+  if (inside && inside.kind === 'building') {
+    text = `${inside.building.name} \u00B7 Floor ${inside.floor + 1}`;
+  } else if (inside) {
     text = 'Inside a house';
   } else {
     let mode = 'Walking';
@@ -2682,7 +2689,15 @@ function updateDoorPrompt() {
   doorPlot = null;
   doorBuilding = null;
 
-  if (inside) {
+  if (inside && inside.kind === 'building') {
+    // Near the door of the building (ground floor only)?
+    const ex = inside.plan.exit;
+    if (inside.floor === 0 && player.y - EYE_HEIGHT < 0.7 &&
+        player.z > inside.z + ex.z && Math.abs(player.x - inside.x - ex.x) < ex.w / 2) {
+      doorAction = 'exit';
+      text = 'Go outside (E)';
+    }
+  } else if (inside) {
     // Near the inside door (the south wall, in the middle)?
     if (player.z > inside.z + ROOM_HALF_D - 1.8 && Math.abs(player.x - inside.x) < 2.2) {
       doorAction = 'exit';
@@ -2777,9 +2792,84 @@ function exitHouse() {
 // Later: start a job, open a shop panel, or walk into an interior for that building.
 // =====================================================
 function onEnterBuilding(id) {
-  const building = buildings.byId.get(id);
-  if (!building) return;
-  flashHint(`${building.name} opens soon`);
+  enterBuilding(id, 0);
+}
+
+// Go inside a civic building (its inside is built in js/buildings/interiors/). floorIndex 0 = ground floor.
+function enterBuilding(id, floorIndex = 0) {
+  const item = buildings.byId.get(id);
+  if (!item) return false;
+  const room = buildings.getBuildingInterior(id);
+  if (!room) {
+    flashHint(`${item.name} cannot be opened right now`);
+    return false;
+  }
+  const plan = room.plan;
+  const f = Math.max(0, Math.min(plan.floors.length - 1, floorIndex | 0));
+  inside = { kind: 'building', building: item, plan, room, x: room.x, z: room.z, blocks: [], spots: plan.spots, floor: f };
+  camera.near = 0.12;                 // so you can stand close to furniture
+  camera.updateProjectionMatrix();
+
+  // No flying inside, and stop any movement.
+  flying = false;
+  landing = false;
+  vy = 0;
+  vel.x = 0;
+  vel.z = 0;
+  updateFlyUI();
+
+  // Appear just inside the door, looking into the room (on the floor that was asked for).
+  player.x = room.x + plan.spawn.x;
+  player.z = room.z + plan.spawn.z;
+  player.y = plan.floors[f].top + EYE_HEIGHT;
+  player.yaw = plan.spawn.yaw;
+  player.pitch = -0.12;
+
+  room.show(f);
+  updateHouseLOD();
+  setHint();
+  return true;
+}
+
+function exitBuilding() {
+  const item = inside.building;
+  inside.room.hide();
+  camera.near = 0.5;
+  camera.updateProjectionMatrix();
+
+  // Stand just outside the door, looking away from the building.
+  const lz = item.door.z + 0.6;
+  const c = Math.cos(item.facing);
+  const s = Math.sin(item.facing);
+  player.x = item.x + c * item.door.x + s * lz;
+  player.z = item.z - s * item.door.x + c * lz;
+  player.y = EYE_HEIGHT;
+  player.yaw = item.facing + Math.PI;
+  player.pitch = 0.1;
+
+  inside = null;
+  vel.x = 0;
+  vel.z = 0;
+  updateHouseLOD();
+  setHint();
+}
+
+// Every frame while you are inside a building: walls and furniture push you back, and your
+// height glides to the floor (or the staircase) under your feet.
+function updateBuildingWalk(dt) {
+  const plan = inside.plan;
+  const feet = player.y - EYE_HEIGHT;
+  const p = pushOutBuilding(plan, player.x - inside.x, player.z - inside.z, feet, 0.35);
+  player.x = inside.x + p.x;
+  player.z = inside.z + p.z;
+  const target = floorAt(plan, p.x, p.z, feet) + EYE_HEIGHT;
+  player.y += (target - player.y) * (1 - Math.exp(-12 * dt));
+  const idx = floorIndexAt(plan, player.y - EYE_HEIGHT);
+  if (idx !== inside.floor) {
+    inside.floor = idx;
+    inside.room.show(idx);       // the floor you are on, and the ones right above and below
+    lastAltitudeText = '';       // refresh the "Floor N" text
+  }
 }
 
 // Pressing E (or the door button) does whatever the door button says.
@@ -2787,7 +2877,7 @@ function useDoor() {
   if (avatar.state !== 'stand') standUp();
   if (agreementOpen) return;   // the house paper is open
   if (doorAction === 'enter' && doorPlot) enterHouse(doorPlot);
-  else if (doorAction === 'exit' && inside) exitHouse();
+  else if (doorAction === 'exit' && inside) { if (inside.kind === 'building') exitBuilding(); else exitHouse(); }
   else if (doorAction === 'building' && doorBuilding) onEnterBuilding(doorBuilding.id);
 }
 
@@ -3567,6 +3657,7 @@ function nearestSpot(kind, range) {
   let bestDistance = range;
   for (const s of inside.spots) {
     if (s.kind !== kind) continue;
+    if (inside.kind === 'building' && Math.abs(s.y - (player.y - EYE_HEIGHT)) > 1.6) continue;   // another floor
     const d = Math.hypot(inside.x + s.x - player.x, inside.z + s.z - player.z);
     if (d < bestDistance) {
       best = s;
@@ -3580,6 +3671,12 @@ function nearestSpot(kind, range) {
 function isFreeFloor(x, z) {
   const lx = x - inside.x;
   const lz = z - inside.z;
+  if (inside.kind === 'building') {                       // a building: use its walls, blocks and floors
+    const feet = player.y - EYE_HEIGHT;
+    const p = pushOutBuilding(inside.plan, lx, lz, feet, 0.35);
+    if (Math.hypot(p.x - lx, p.z - lz) > 0.01) return false;
+    return floorAt(inside.plan, lx, lz, feet) > feet - 0.3;   // and there must be a floor under the spot
+  }
   if (Math.abs(lx) > ROOM_HALF_W - 0.6 || Math.abs(lz) > ROOM_HALF_D - 0.6) return false;
   for (const b of inside.blocks) {
     if (lx > b.x0 - 0.45 && lx < b.x1 + 0.45 && lz > b.z0 - 0.45 && lz < b.z1 + 0.45) return false;
@@ -3680,6 +3777,21 @@ viewBtn.addEventListener('click', (e) => { e.currentTarget.blur(); toggleView();
 // Can the camera be at this spot without poking through a wall, the floor or a house?
 function cameraSpotFree(x, y, z) {
   if (y < 0.3) return false;
+  if (inside && inside.kind === 'building') {
+    const plan = inside.plan;
+    const lx = x - inside.x;
+    const lz = z - inside.z;
+    if (Math.abs(lx) > plan.halfW - 0.25 || Math.abs(lz) > plan.halfD - 0.25) return false;
+    const feet = player.y - EYE_HEIGHT;
+    if (y > ceilingAt(plan, lx, lz, feet) - 0.25) return false;          // not through a ceiling
+    if (y < floorAt(plan, lx, lz, feet) + 0.3) return false;             // not through the floor
+    if (avatar.state === 'stand') {                                       // walls, furniture and railings
+      for (const b of plan.blocks) {
+        if (y < b[5] && y > b[4] - 0.2 && lx > b[0] - 0.15 && lx < b[1] + 0.15 && lz > b[2] - 0.15 && lz < b[3] + 0.15) return false;
+      }
+    }
+    return true;
+  }
   if (inside) {
     const lx = x - inside.x;
     const lz = z - inside.z;
@@ -3712,8 +3824,9 @@ function updateAvatarAndCamera(dt) {
   avatar.update(dt, {
     x: player.x,
     z: player.z,
-    ground: inside ? 0 : (isOnBridge(player.x, player.z) ? BRIDGE_TOP : ROAD_TOP),
-    altitude: Math.max(0, player.y - EYE_HEIGHT),
+    // Inside a building the avatar stands on the floor (or stair) under your feet; no "altitude" there.
+    ground: inside ? (inside.kind === 'building' ? Math.max(0, player.y - EYE_HEIGHT) : 0) : (isOnBridge(player.x, player.z) ? BRIDGE_TOP : ROAD_TOP),
+    altitude: inside && inside.kind === 'building' ? 0 : Math.max(0, player.y - EYE_HEIGHT),
     vx: vel.x,
     vz: vel.z,
     flying
@@ -3815,6 +3928,21 @@ function animate(now) {
   renderer.render(scene, camera);
 }
 requestAnimationFrame(animate);
+
+// Get the building interiors ready one by one, quietly, while you walk around outside.
+BUILDINGS.forEach((entry, i) => {
+  setTimeout(() => buildings.getBuildingInterior(entry.id), 9000 + i * 1500);
+});
+
+// Test shortcut: add  ?inside=hospital  to the web address to start inside that building.
+// Add  &floor=1  to start on the floor above the ground floor (0 = ground floor, 1 = next, 2 = next ...).
+{
+  const insideId = (urlParams.get('inside') || '').toLowerCase();
+  if (insideId) {
+    const ok = enterBuilding(insideId, Number(urlParams.get('floor')) || 0);
+    if (!ok) console.warn(`?inside=${insideId}: no such building. Try one of: ${[...buildings.byId.keys()].join(', ')}`);
+  }
+}
 
 // Everything is built: show the right houses, hide the loading screen and show the main menu.
 updateHouseLOD();
