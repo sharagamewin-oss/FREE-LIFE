@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ROOM, buildInterior, pushOutOfFurniture } from './interior.js';
 import { createPets } from './pets.js';
+import { BUILDINGS, createBuildings } from './buildings/index.js';
 import { createAvatar } from './avatar.js';
 
 // =====================================================
@@ -609,6 +610,10 @@ const PAD_TOP = 0.1;      // height of the plot pads; houses are built on top of
 const PLOTS = [];
 const PLOT_AT = {};   // quick lookup: PLOT_AT['gx,gz'] gives the plot in that grid cell
 
+// Civic buildings (js/buildings/): 12 grid cells are kept for them, so no house is made there.
+const CIVIC_CELLS = new Set(BUILDINGS.map((bd) => `${bd.cell.gx},${bd.cell.gz}`));
+const CIVIC_AT = {};  // quick lookup: CIVIC_AT['gx,gz'] gives the civic building in that cell (filled in below)
+
 // Does this plot touch the town square (plus a little space around it)?
 function plotTouchesSquare(x, z) {
   const half = PLOT_SIZE / 2;
@@ -629,12 +634,21 @@ function plotTouchesRiver(x, z) {
 }
 
 const styleRng = makeRng(11);
+let civicSkipped = 0;   // reserved cells passed so far (keeps house numbers the same as before)
 
 for (let gz = GRID_MIN_Z; gz <= GRID_MAX_Z; gz++) {
   for (let gx = GRID_MIN_X; gx <= GRID_MAX_X; gx++) {
     const x = (gx + 0.5) * PLOT_PITCH;
     const z = (gz + 0.5) * PLOT_PITCH;
     if (plotTouchesSquare(x, z) || plotTouchesRiver(x, z)) continue;
+
+    // Reserved for a civic building: no house here. We still use up one random number and one
+    // house number, so every other plot keeps exactly the same house style and number as before.
+    if (CIVIC_CELLS.has(`${gx},${gz}`)) {
+      styleRng();
+      civicSkipped++;
+      continue;
+    }
 
     // The front door looks toward the square, along the stronger direction,
     // so every door faces a street line.
@@ -651,7 +665,7 @@ for (let gz = GRID_MIN_Z; gz <= GRID_MAX_Z; gz++) {
       z,
       facing: Math.atan2(faceX, faceZ),
       ownerId: null,
-      number: PLOTS.length + 1,    // the house number shown to players (1, 2, 3...)
+      number: PLOTS.length + 1 + civicSkipped,    // the house number shown to players (1, 2, 3...)
       house: HOUSE_STYLES[Math.floor(styleRng() * HOUSE_STYLES.length)]
     };
     PLOTS.push(plot);
@@ -1139,8 +1153,30 @@ houseChunks.forEach((chunk) => {
   });
 });
 
+// ---------- Civic buildings (the code for each one is in js/buildings/) ----------
+// The door of a civic building looks toward the square: the SAME rule the houses use above.
+function civicFacing(x, z) {
+  let faceX = 0;
+  let faceZ = 0;
+  if (Math.abs(x) > Math.abs(z)) faceX = -Math.sign(x);
+  else faceZ = -Math.sign(z);
+  return Math.atan2(faceX, faceZ);
+}
+
+const buildings = createBuildings({
+  scene,
+  makeBuilder,
+  plotPitch: PLOT_PITCH,
+  plotSize: PLOT_SIZE,
+  ground: PAD_TOP,
+  facingFor: civicFacing,
+  helpers: { frontWindow, sideWindow, fenceX, fenceZ, flowerBed, bush, makeRng }
+});
+buildings.items.forEach((item) => { CIVIC_AT[`${item.gx},${item.gz}`] = item; });
+
 // Decides which houses are drawn: detailed near you, lite far away, none when you are inside a house.
 function updateHouseLOD() {
+  buildings.update(player.x, player.z, !inside);   // civic buildings hide too while you are inside a house
   houseChunks.forEach((chunk) => {
     const d = Math.hypot(chunk.cx - player.x, chunk.cz - player.z);
     const outdoors = !inside;
@@ -2062,6 +2098,26 @@ const MAX_ALTITUDE = 100;    // the highest you can fly above the ground (metres
 // player.y is the height of your eyes above the ground.
 const player = { x: 0, y: EYE_HEIGHT, z: 45, yaw: 0, pitch: 0.1 };
 
+// Test shortcut: add  ?go=hospital  to the web address to start in front of that building.
+// Ids: cafe, hospital, farmland, company, school, park, medical, food, furniture, police, fire, candy
+{
+  const goId = (urlParams.get('go') || '').toLowerCase();
+  if (goId) {
+    const target = buildings.byId.get(goId);
+    if (target) {
+      const ahead = target.door.z + 5;          // 5 m in front of the door, in the building's own directions
+      const c = Math.cos(target.facing);
+      const s = Math.sin(target.facing);
+      player.x = target.x + c * target.door.x + s * ahead;
+      player.z = target.z - s * target.door.x + c * ahead;
+      player.yaw = target.facing;               // look at the building
+      player.pitch = 0.1;
+    } else {
+      console.warn(`?go=${goId}: no such building. Try one of: ${[...buildings.byId.keys()].join(', ')}`);
+    }
+  }
+}
+
 // Fly mode state
 let flying = false;   // true while in fly mode
 let landing = false;  // true while gently coming down to land
@@ -2316,7 +2372,31 @@ function blockedBySolid(x, z, altitude) {
   }
 
   // Only the house in that plot is checked.
-  const plot = PLOT_AT[`${Math.floor(x / PLOT_PITCH)},${Math.floor(z / PLOT_PITCH)}`];
+  const cellKey = `${Math.floor(x / PLOT_PITCH)},${Math.floor(z / PLOT_PITCH)}`;
+  const plot = PLOT_AT[cellKey];
+
+  // A civic building in this cell (js/buildings/)? Same maths as for a house: turn the world
+  // position into the building's own directions, then test the building's own "collide" lists.
+  // A thing blocks you only while you are lower than its height, so you can fly over it.
+  const civic = CIVIC_AT[cellKey];
+  if (civic) {
+    const cdx = x - civic.x;
+    const cdz = z - civic.z;
+    const cc = Math.cos(civic.facing);
+    const cs = Math.sin(civic.facing);
+    const clx = cc * cdx - cs * cdz;
+    const clz = cs * cdx + cc * cdz;
+    for (const [bx, bz, w, d, h] of civic.collide.boxes) {
+      if (altitude < h &&
+          Math.abs(clx - bx) < w / 2 + PLAYER_RADIUS &&
+          Math.abs(clz - bz) < d / 2 + PLAYER_RADIUS) return true;
+    }
+    for (const [rx, rz, r, h] of civic.collide.round) {
+      if (altitude < h && Math.hypot(clx - rx, clz - rz) < r + GARDEN_PAD) return true;
+    }
+    return false;
+  }
+
   if (!plot || !plot.house) return false;
 
   const dx = x - plot.x;
@@ -2561,6 +2641,7 @@ const DOOR_REACH = 2.4;          // how close you must be (metres)
 
 let doorAction = null;           // 'enter', 'exit' or null
 let doorPlot = null;             // the plot whose door is near you
+let doorBuilding = null;         // the civic building whose door is near you
 let lastDoorText = '';
 
 // Is the player next to the door of a house? Returns that plot, or null.
@@ -2580,11 +2661,26 @@ function findNearbyDoor() {
   return Math.hypot(lx - spot.x, lz - spot.z) < DOOR_REACH ? plot : null;
 }
 
+// Is the player next to the door of a civic building? Returns that building, or null.
+function findNearbyBuilding() {
+  const civic = CIVIC_AT[`${Math.floor(player.x / PLOT_PITCH)},${Math.floor(player.z / PLOT_PITCH)}`];
+  if (!civic) return null;
+
+  const dx = player.x - civic.x;
+  const dz = player.z - civic.z;
+  const c = Math.cos(civic.facing);
+  const s = Math.sin(civic.facing);
+  const lx = c * dx - s * dz;    // turn the world position into the building's own directions
+  const lz = s * dx + c * dz;
+  return Math.hypot(lx - civic.door.x, lz - civic.door.z) < DOOR_REACH ? civic : null;
+}
+
 // Runs every frame: decides if the door button should be shown.
 function updateDoorPrompt() {
   let text = '';
   doorAction = null;
   doorPlot = null;
+  doorBuilding = null;
 
   if (inside) {
     // Near the inside door (the south wall, in the middle)?
@@ -2597,6 +2693,12 @@ function updateDoorPrompt() {
     if (doorPlot && canEnterPlot(doorPlot)) {
       doorAction = 'enter';
       text = doorPlot.house === 'treehouse' ? 'Climb up and go inside (E)' : 'Go inside (E)';
+    } else if (!doorPlot) {
+      doorBuilding = findNearbyBuilding();
+      if (doorBuilding) {
+        doorAction = 'building';
+        text = `Enter ${doorBuilding.name} (E)`;
+      }
     }
   }
 
@@ -2667,12 +2769,26 @@ function exitHouse() {
   setHint();
 }
 
+// =====================================================
+// JOBS WILL GO HERE LATER.
+// This runs when the player presses E (or taps the door button) at a civic building's door.
+// `id` is the building id: 'cafe', 'hospital', 'farmland', 'company', 'school', 'park', 'medical',
+// 'food', 'furniture', 'police', 'fire' or 'candy'. For now it only shows a hint.
+// Later: start a job, open a shop panel, or walk into an interior for that building.
+// =====================================================
+function onEnterBuilding(id) {
+  const building = buildings.byId.get(id);
+  if (!building) return;
+  flashHint(`${building.name} opens soon`);
+}
+
 // Pressing E (or the door button) does whatever the door button says.
 function useDoor() {
   if (avatar.state !== 'stand') standUp();
   if (agreementOpen) return;   // the house paper is open
   if (doorAction === 'enter' && doorPlot) enterHouse(doorPlot);
   else if (doorAction === 'exit' && inside) exitHouse();
+  else if (doorAction === 'building' && doorBuilding) onEnterBuilding(doorBuilding.id);
 }
 
 doorBtn.addEventListener('click', () => {
