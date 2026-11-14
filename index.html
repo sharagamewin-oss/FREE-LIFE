@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>FREE LIFE</title>
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- This tells the browser where to find Three.js (loaded from a CDN) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <!-- The 3D world is drawn here -->
+  <canvas id="game"></canvas>
+
+  <!-- 1) Loading screen -->
+  <div id="loading" class="screen">
+    <h1 class="title">FREE LIFE</h1>
+    <p id="loadingText" class="subtitle">Loading the land</p>
+    <div class="dots"><span></span><span></span><span></span></div>
+    <noscript><p class="subtitle">Please turn on JavaScript to enter FREE LIFE.</p></noscript>
+  </div>
+
+  <!-- 2) Main menu -->
+  <div id="menu" class="screen hidden">
+    <h1 class="title">FREE LIFE</h1>
+    <p class="subtitle">A world to live in, your way.</p>
+    <button id="startBtn">Enter the World</button>
+    <p class="help">
+      Computer: W A S D or arrow keys to walk, hold Shift to run, drag the mouse to look.<br>
+      Fly: press F. Space goes up, Ctrl or C goes down. Press F again to land.<br>
+      Houses: stand at a house door and press E to go inside. Press E at the inside door to go out.<br>
+      You: Q sits (on a sofa or chair if you are close). Z sleeps (in the bed if you are close). V switches between seeing yourself and first person.<br>
+      Phone: left circle to walk, drag anywhere else to look, tap Fly to fly, tap the door button to go in or out.
+    </p>
+  </div>
+
+  <!-- 3) In-game text (shown after you press Enter the World) -->
+  <div id="hud" class="hidden">
+    <div id="hudTitle">FREE LIFE</div>
+    <div id="hudHint"></div>
+    <div id="hudAltitude">Altitude: 0 m</div>
+  </div>
+
+  <!-- Touch joystick (only shown on phones and tablets) -->
+  <div id="joystick" class="hidden"><div id="stick"></div></div>
+
+  <!-- Fly buttons (only shown on phones and tablets) -->
+  <div id="flyButtons" class="hidden">
+    <button id="upBtn" class="flyBtn small hidden">&#9650;</button>
+    <button id="downBtn" class="flyBtn small hidden">&#9660;</button>
+    <button id="flyBtn" class="flyBtn">Fly</button>
+  </div>
+  <!-- Your character: sit, sleep, change view -->
+  <div id="actionBar" class="hidden">
+    <button id="sitBtn" class="actionBtn">Sit (Q)</button>
+    <button id="sleepBtn" class="actionBtn">Sleep (Z)</button>
+    <button id="viewBtn" class="actionBtn">First person (V)</button>
+  </div>
+  <!-- Sign in / sign out (top centre) -->
+  <div id="authBar">
+    <span id="authName" class="hidden"></span>
+    <span id="coinText" class="hidden"></span>
+    <button id="houseBtn" class="hidden">My House</button>
+    <button id="authBtn" class="hidden">Sign in with Google</button>
+  </div>
+
+  <!-- Buy button (appears at the door of a house) -->
+  <button id="claimBtn" class="hidden">Buy this house</button>
+
+  <!-- My house panel (requests and members) -->
+  <div id="housePanel" class="hidden">
+    <div id="housePaper">
+      <h2>MY HOUSE</h2>
+      <div id="housePanelBody"></div>
+      <p id="housePanelMsg"></p>
+      <div id="houseButtons"><button id="houseClose">Close</button></div>
+    </div>
+  </div>
+
+  <!-- House agreement paper -->
+  <div id="agreement" class="hidden">
+    <div id="paper">
+      <h2>HOUSE AGREEMENT</h2>
+      <p class="paperSub">FREE LIFE Land Office</p>
+      <div id="paperBody"></div>
+      <p class="paperNote">This agreement uses game coins only. No real money is used.</p>
+      <p id="paperMsg"></p>
+      <div id="paperButtons">
+        <button id="paperYes">Sign &amp; Buy</button>
+        <button id="paperNo">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Door button (appears when you are near a door, outside or inside) -->
+  <button id="doorBtn" class="hidden">Go inside (E)</button>
+
+  <script type="module" src="js/main.js"
+    onerror="document.getElementById('loadingText').textContent='Could not load the game. Check your internet and the file names.'"></script>
+</body>
+</html>
