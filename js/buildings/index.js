@@ -18,21 +18,37 @@ import * as police from './police.js';
 import * as fire from './fire.js';
 import * as candy from './candy.js';
 
-// THE LIST. Each entry: id, name, cell (the plot-grid column gx and row gz it stands on), and its module.
+// The inside of each building (see interiors/inside_common.js for how an interior is described).
+import * as cafeIn from './interiors/cafe_inside.js';
+import * as hospitalIn from './interiors/hospital_inside.js';
+import * as farmlandIn from './interiors/farmland_inside.js';
+import * as companyIn from './interiors/company_inside.js';
+import * as schoolIn from './interiors/school_inside.js';
+import * as parkIn from './interiors/park_inside.js';
+import * as medicalIn from './interiors/medical_inside.js';
+import * as foodIn from './interiors/food_inside.js';
+import * as furnitureIn from './interiors/furniture_inside.js';
+import * as policeIn from './interiors/police_inside.js';
+import * as fireIn from './interiors/fire_inside.js';
+import * as candyIn from './interiors/candy_inside.js';
+import { shadeGeometry } from './interiors/inside_common.js';
+
+// THE LIST. Each entry: id, name, cell (the plot-grid column gx and row gz it stands on), its outside
+// (module) and its inside (interior).
 // main.js leaves these 12 cells free of houses (it reads this list before it makes the plots).
 export const BUILDINGS = [
-  { id: 'cafe',      name: 'Cafe',           cell: { gx: 0,  gz: 1 },  module: cafe },
-  { id: 'hospital',  name: 'Hospital',       cell: { gx: -1, gz: -2 }, module: hospital },
-  { id: 'farmland',  name: 'Farmland',       cell: { gx: -2, gz: -2 }, module: farmland },
-  { id: 'company',   name: 'Company',        cell: { gx: 1,  gz: -2 }, module: company },
-  { id: 'school',    name: 'School',         cell: { gx: -2, gz: -1 }, module: school },
-  { id: 'park',      name: 'Park',           cell: { gx: -2, gz: 0 },  module: park },
-  { id: 'medical',   name: 'Medical Store',  cell: { gx: 0,  gz: -2 }, module: medical },
-  { id: 'food',      name: 'Food Store',     cell: { gx: -1, gz: 1 },  module: food },
-  { id: 'furniture', name: 'Furniture Shop', cell: { gx: -2, gz: 1 },  module: furniture },
-  { id: 'police',    name: 'Police Station', cell: { gx: 1,  gz: -1 }, module: police },
-  { id: 'fire',      name: 'Fire Station',   cell: { gx: 1,  gz: 0 },  module: fire },
-  { id: 'candy',     name: 'Candy Shop',     cell: { gx: 1,  gz: 1 },  module: candy }
+  { id: 'cafe',      name: 'Cafe',           cell: { gx: 0,  gz: 1 },  module: cafe, interior: cafeIn },
+  { id: 'hospital',  name: 'Hospital',       cell: { gx: -1, gz: -2 }, module: hospital, interior: hospitalIn },
+  { id: 'farmland',  name: 'Farmland',       cell: { gx: -2, gz: -2 }, module: farmland, interior: farmlandIn },
+  { id: 'company',   name: 'Company',        cell: { gx: 1,  gz: -2 }, module: company, interior: companyIn },
+  { id: 'school',    name: 'School',         cell: { gx: -2, gz: -1 }, module: school, interior: schoolIn },
+  { id: 'park',      name: 'Park',           cell: { gx: -2, gz: 0 },  module: park, interior: parkIn },
+  { id: 'medical',   name: 'Medical Store',  cell: { gx: 0,  gz: -2 }, module: medical, interior: medicalIn },
+  { id: 'food',      name: 'Food Store',     cell: { gx: -1, gz: 1 },  module: food, interior: foodIn },
+  { id: 'furniture', name: 'Furniture Shop', cell: { gx: -2, gz: 1 },  module: furniture, interior: furnitureIn },
+  { id: 'police',    name: 'Police Station', cell: { gx: 1,  gz: -1 }, module: police, interior: policeIn },
+  { id: 'fire',      name: 'Fire Station',   cell: { gx: 1,  gz: 0 },  module: fire, interior: fireIn },
+  { id: 'candy',     name: 'Candy Shop',     cell: { gx: 1,  gz: 1 },  module: candy, interior: candyIn }
 ];
 
 const PAD_BORDER = 0xa8a294;   // the darker stone edge of the lot
@@ -84,6 +100,85 @@ export function createBuildings(ctx) {
   const signGeo = new THREE.PlaneGeometry(SIGN_W, SIGN_H);
   const items = [];
   const byId = new Map();
+
+  // ---------- The insides ----------
+  // Each interior is built far away from the town (x = 8000 + 100 x the building's number, z = 0), the
+  // same trick the house interiors use (they are at x = 5000 and up). The floors are stacked in height.
+  // Every floor is its OWN mesh, and only the floor you are on and the ones directly above and below
+  // it are drawn.
+  const interiorMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false });
+  const interiors = new Map();
+
+  // Cuts a building's geometry into one geometry per floor, by the height of every triangle.
+  // A floor's part starts 0.5 m under its floor top (where its slab starts).
+  function splitByFloor(geometry, plan) {
+    const pos = geometry.attributes.position.array;
+    const nor = geometry.attributes.normal.array;
+    const col = geometry.attributes.color.array;
+    const starts = plan.floors.map((f) => f.top - 0.5);
+    const parts = plan.floors.map(() => ({ p: [], n: [], c: [] }));
+    for (let t = 0; t < pos.length / 9; t++) {
+      const cy = (pos[t * 9 + 1] + pos[t * 9 + 4] + pos[t * 9 + 7]) / 3;
+      let f = 0;
+      for (let i = 1; i < starts.length; i++) if (cy >= starts[i] - 1e-4) f = i;
+      for (let k = 0; k < 9; k++) {
+        parts[f].p.push(pos[t * 9 + k]);
+        parts[f].n.push(nor[t * 9 + k]);
+        parts[f].c.push(col[t * 9 + k]);
+      }
+    }
+    return parts.map((part) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(part.p, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(part.n, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(part.c, 3));
+      return g;
+    });
+  }
+
+  // Builds the inside of a building the first time it is needed. Returns null if it cannot be built.
+  //   { id, plan, x, z, group, show(floorIndex), hide() }
+  function getBuildingInterior(id) {
+    if (interiors.has(id)) return interiors.get(id);
+    const index = BUILDINGS.findIndex((e) => e.id === id);
+    const mod = index < 0 ? null : BUILDINGS[index].interior;
+    if (!mod || !mod.plan || typeof mod.build !== 'function') return null;
+
+    let room = null;
+    try {
+      const b = makeBuilder();
+      mod.build(b, { G: 0 });
+      const geometry = shadeGeometry(b.build());
+      const plan = mod.plan;
+      const ox = 8000 + 100 * index;
+      const group = new THREE.Group();
+      group.position.set(ox, 0, 0);
+      const floors = splitByFloor(geometry, plan).map((g) => {
+        const mesh = new THREE.Mesh(g, interiorMaterial);
+        group.add(mesh);
+        return mesh;
+      });
+      geometry.dispose();
+      group.visible = false;
+      scene.add(group);
+      room = {
+        id,
+        plan,
+        x: ox,
+        z: 0,
+        group,
+        show(floorIndex) {                       // the floor you are on, and the ones right above and below
+          group.visible = true;
+          floors.forEach((m, i) => { m.visible = Math.abs(i - floorIndex) <= 1; });
+        },
+        hide() { group.visible = false; }
+      };
+    } catch (err) {
+      console.warn(`Interior \"${id}\" could not be built:`, err);
+    }
+    interiors.set(id, room);
+    return room;
+  }
 
   BUILDINGS.forEach((entry) => {
     const mod = entry.module;
@@ -137,6 +232,7 @@ export function createBuildings(ctx) {
   return {
     items,
     byId,
+    getBuildingInterior,
     // Called a few times a second: hides every building while you are inside a house (or far away).
     update(playerX, playerZ, outdoors) {
       items.forEach((item) => {
