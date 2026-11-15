@@ -514,7 +514,6 @@ function lamp(x, y, z, col, intensity, radius) {
     c: hex(col), i: intensity, r: radius
   });
 }
-
 function spot(kind, lx, ly, lz) {
   R.spots.push({
     kind, y: ly,
@@ -1134,12 +1133,10 @@ export function bakeRoom(style) {
   let seed = 0;
   for (let i = 0; i < style.length; i++) seed = seed * 31 + style.charCodeAt(i);
   T = { a: 0, c: 1, s: 0, x: 0, z: 0 };
-  R = { th, g: {}, occ: [], blocks: [], lamps: [], win: [] };
   R = { th, g: {}, occ: [], blocks: [], lamps: [], win: [],spots: [] };
   makeGroups(th, style, rng(seed));
   layout(style);
   bakeLight();
-  const room = { groups: R.g, blocks: R.blocks };
   const room = { groups: R.g, blocks: R.blocks, spots: R.spots };
   R = null;
   return room;
@@ -1179,7 +1176,6 @@ export function buildInterior(style) {
     mesh.frustumCulled = false;
     group.add(mesh);
   });
-  return { group, blocks: room.blocks };
   return { group, blocks: room.blocks, spots: room.spots };
 }
 
