@@ -12,22 +12,25 @@
 //   }
 //
 // LOCAL SPACE: the middle of the room is (0, 0). x = right, +z = toward the door, y = up.
-// Every floor is 24 x 16 m (x -12..12, z -8..8). Floor tops are at y = 0, 4, 8.
+// Every floor is 36 x 24 m (x -18..18, z -12..12). Floor tops are at y = 0, 6, 12, 18 ...
 // The door is in the middle of the south wall (+z), on the ground floor only.
 //
-// KEEP EVERY PART INSIDE ONE FLOOR BAND (from 0.5 m under the floor top to 3.5 m above it):
+// KEEP EVERY PART INSIDE ONE FLOOR BAND (from 0.5 m under the floor top to 5.5 m above it):
 // the game cuts the building into one mesh per floor, and shows only the floor you are on and
 // the ones directly above and below it.
 // =====================================================
 
-export const HALF_W = 12;
-export const HALF_D = 8;
-export const FLOOR_H = 4;       // from one floor top to the next
+export const HALF_W = 18;
+export const HALF_D = 12;
+export const FLOOR_H = 6;       // from one floor top to the next
 export const SLAB = 0.5;        // thickness of the floor between two floors
-export const CLEAR = 3.5;       // from a floor top up to the ceiling
+export const CLEAR = FLOOR_H - SLAB;   // from a floor top up to the ceiling (5.5)
 export const STAIR_W = 2.4;     // width of a staircase
-export const STAIR_RUN = 8;     // length of a staircase (along z)
-export const STEPS = 20;        // 20 steps of 0.2 m rise and 0.4 m run
+const STEP_RISE = 0.2;
+const STEP_RUN = 0.4;
+export const STEPS = Math.round(FLOOR_H / STEP_RISE);   // 30 steps of 0.2 m rise
+export const STAIR_RUN = STEPS * STEP_RUN;              // 12 m long (along z)
+const SH = STAIR_RUN / 2;       // half the stair run: stairs span z -SH..SH
 const WALL_T = 0.3;
 const DOOR_W = 2.4;
 const DOOR_H = 2.7;
@@ -52,7 +55,7 @@ function subtractRect(rect, hole) {         // a rectangle minus a hole inside i
 // One step of a flight: its z range and the height of its top.
 export function stepInfo(st, i) {
   const run = STAIR_RUN / STEPS;
-  const zA = st.east ? 4 - (i + 1) * run : -4 + i * run;
+  const zA = st.east ? SH - (i + 1) * run : -SH + i * run;
   const top = st.ramp.from + ((st.ramp.to - st.ramp.from) * (i + 0.5)) / STEPS;
   return { zA, zB: zA + run, top };
 }
@@ -65,8 +68,8 @@ export function makePlan(floorCount) {
     halfW: HALF_W,
     halfD: HALF_D,
     floors: [],
-    spawn: { x: 0, z: 6.6, yaw: 0 },
-    exit: { x: 0, z: 6.2, w: 4.4 },        // the "Go outside" zone: z beyond 6.2, within w/2 of x
+    spawn: { x: 0, z: HALF_D - 1.4, yaw: 0 },
+    exit: { x: 0, z: HALF_D - 1.8, w: DOOR_W + 2 },   // the "Go outside" zone: z beyond HALF_D-1.8, within w/2 of x
     surfaces: [],                           // [x0, x1, z0, z1, top]   flat floors you can walk on
     ramps: [],                              // { x0, x1, z0, z1, up, from, to }   the stairs
     blocks: [],                             // [x0, x1, z0, z1, yFrom, yTo]   solid things
@@ -87,8 +90,8 @@ export function makePlan(floorCount) {
     const x1 = east ? HALF_W : -HALF_W + STAIR_W;
     const from = plan.floors[k].top;
     const to = plan.floors[k + 1].top;
-    const ramp = { x0, x1, z0: -4, z1: 4, up: east ? '-z' : '+z', from, to };
-    const st = { k, east, ramp, hole: [x0, x1, -4, 4] };
+    const ramp = { x0, x1, z0: -SH, z1: SH, up: east ? '-z' : '+z', from, to };
+    const st = { k, east, ramp, hole: [x0, x1, -SH, SH] };
     plan.stairs.push(st);
     plan.ramps.push(ramp);
     plan.holes.push({ floor: k + 1, rect: st.hole });
@@ -101,15 +104,16 @@ export function makePlan(floorCount) {
       plan.blocks.push([sx0, sx1, s.zA, s.zB, from, s.top + RAIL_H]);
     }
     // Close the open end under the flight (where the steps are high above the floor).
-    if (east) plan.blocks.push([x0, x1, -4, -3.9, from, from + 3]);
-    else plan.blocks.push([x0, x1, 3.9, 4, from, from + 3]);
+    const endH = FLOOR_H * 0.75;
+    if (east) plan.blocks.push([x0, x1, -SH, -SH + 0.1, from, from + endH]);
+    else plan.blocks.push([x0, x1, SH - 0.1, SH, from, from + endH]);
 
     // Railings round the opening, on the upper floor. The edge where the stairs arrive stays open.
     const T = to;
     const side = east ? [x0 - 0.1, x0] : [x1, x1 + 0.1];
-    plan.blocks.push([side[0], side[1], -4, 4, T, T + RAIL_H]);
-    if (east) plan.blocks.push([x0, x1, 4, 4.1, T, T + RAIL_H]);     // the bottom end (south)
-    else plan.blocks.push([x0, x1, -4.1, -4, T, T + RAIL_H]);        // the bottom end (north)
+    plan.blocks.push([side[0], side[1], -SH, SH, T, T + RAIL_H]);
+    if (east) plan.blocks.push([x0, x1, SH, SH + 0.1, T, T + RAIL_H]);     // the bottom end (south)
+    else plan.blocks.push([x0, x1, -SH - 0.1, -SH, T, T + RAIL_H]);        // the bottom end (north)        // the bottom end (north)
   }
 
   // The floors you can walk on (an upper floor has a hole above the flight that arrives on it).
@@ -164,51 +168,56 @@ export function shell(b, plan, opts = {}) {
     const yb = i === 0 ? -0.3 : T - SLAB;
     const yt = i === last ? T + FLOOR_H : T + CLEAR;
     const h = yt - yb;
-    b.box(WALL, 24.6, h, WALL_T, 0, yb, -HALF_D - WALL_T / 2);                          // north
-    b.box(WALL, WALL_T, h, 16, -HALF_W - WALL_T / 2, yb, 0);                            // west
-    b.box(WALL, WALL_T, h, 16, HALF_W + WALL_T / 2, yb, 0);                             // east
+    const LEN_X = 2 * HALF_W + 2 * WALL_T;
+    b.box(WALL, LEN_X, h, WALL_T, 0, yb, -HALF_D - WALL_T / 2);                         // north
+    b.box(WALL, WALL_T, h, 2 * HALF_D, -HALF_W - WALL_T / 2, yb, 0);                    // west
+    b.box(WALL, WALL_T, h, 2 * HALF_D, HALF_W + WALL_T / 2, yb, 0);                     // east
     if (i === 0) {                                                                      // south, with the door opening
-      const half = (12.3 - DOOR_W / 2);
+      const half = (HALF_W + WALL_T - DOOR_W / 2);
       b.box(WALL, half, h, WALL_T, -(DOOR_W / 2 + half / 2), yb, HALF_D + WALL_T / 2);
       b.box(WALL, half, h, WALL_T, DOOR_W / 2 + half / 2, yb, HALF_D + WALL_T / 2);
       b.box(WALL, DOOR_W, yt - DOOR_H, WALL_T, 0, DOOR_H, HALF_D + WALL_T / 2);
     } else {
-      b.box(WALL, 24.6, h, WALL_T, 0, yb, HALF_D + WALL_T / 2);
+      b.box(WALL, LEN_X, h, WALL_T, 0, yb, HALF_D + WALL_T / 2);
     }
 
     // --- skirting boards ---
-    b.box(TRIM, 24, 0.18, 0.06, 0, T, -HALF_D + 0.03);
-    b.box(TRIM, 0.06, 0.18, 16, -HALF_W + 0.03, T, 0);
-    b.box(TRIM, 0.06, 0.18, 16, HALF_W - 0.03, T, 0);
+    b.box(TRIM, 2 * HALF_W, 0.18, 0.06, 0, T, -HALF_D + 0.03);
+    b.box(TRIM, 0.06, 0.18, 2 * HALF_D, -HALF_W + 0.03, T, 0);
+    b.box(TRIM, 0.06, 0.18, 2 * HALF_D, HALF_W - 0.03, T, 0);
     if (i === 0) {
-      b.box(TRIM, 10.8, 0.18, 0.06, -6.6, T, HALF_D - 0.03);
-      b.box(TRIM, 10.8, 0.18, 0.06, 6.6, T, HALF_D - 0.03);
+      const sk = HALF_W - DOOR_W / 2;
+      b.box(TRIM, sk, 0.18, 0.06, -(DOOR_W / 2 + sk / 2), T, HALF_D - 0.03);
+      b.box(TRIM, sk, 0.18, 0.06, DOOR_W / 2 + sk / 2, T, HALF_D - 0.03);
     } else {
-      b.box(TRIM, 24, 0.18, 0.06, 0, T, HALF_D - 0.03);
+      b.box(TRIM, 2 * HALF_W, 0.18, 0.06, 0, T, HALF_D - 0.03);
     }
 
     // --- window bands (a frame and a bright glass pane) ---
     const win = (cx, cz, w, wall) => {                  // wall: 'n' | 's' | 'e' | 'w'
-      const y = T + 1.3;
+      const gh = CLEAR * 0.43;                          // glass height
+      const y = T + CLEAR * 0.37;
       if (wall === 'n' || wall === 's') {
         const z = wall === 'n' ? -HALF_D : HALF_D;
         const dir = wall === 'n' ? 1 : -1;
-        b.box(TRIM, w + 0.3, 1.8, 0.04, cx, y - 0.15, z + dir * 0.02);
-        b.box(GLASS, w, 1.5, 0.06, cx, y, z + dir * 0.03);
-        b.box(TRIM, 0.06, 1.5, 0.08, cx, y, z + dir * 0.05);
+        b.box(TRIM, w + 0.3, gh + 0.3, 0.04, cx, y - 0.15, z + dir * 0.02);
+        b.box(GLASS, w, gh, 0.06, cx, y, z + dir * 0.03);
+        b.box(TRIM, 0.06, gh, 0.08, cx, y, z + dir * 0.05);
       } else {
         const x = wall === 'w' ? -HALF_W : HALF_W;
         const dir = wall === 'w' ? 1 : -1;
-        b.box(TRIM, 0.04, 1.8, w + 0.3, x + dir * 0.02, y - 0.15, cz);
-        b.box(GLASS, 0.06, 1.5, w, x + dir * 0.03, y, cz);
-        b.box(TRIM, 0.08, 1.5, 0.06, x + dir * 0.05, y, cz);
+        b.box(TRIM, 0.04, gh + 0.3, w + 0.3, x + dir * 0.02, y - 0.15, cz);
+        b.box(GLASS, 0.06, gh, w, x + dir * 0.03, y, cz);
+        b.box(TRIM, 0.08, gh, 0.06, x + dir * 0.05, y, cz);
       }
     };
-    [-9.6, -4.8, 0, 4.8, 9.6].forEach((x) => win(x, 0, 3.2, 'n'));
-    [-9.6, -4.8, 4.8, 9.6].forEach((x) => win(x, 0, 3.2, 's'));
+    const WX = HALF_W * 0.4;                   // spacing of the windows on the north / south walls
+    const WW = WX * 2 / 3;                     // their width
+    [-2, -1, 0, 1, 2].forEach((k) => win(k * WX, 0, WW, 'n'));
+    [-2, -1, 1, 2].forEach((k) => win(k * WX, 0, WW, 's'));
     [['w', false], ['e', true]].forEach(([wall, east]) => {
-      [-6.2, 6.2].forEach((z) => win(0, z, 2.4, wall));
-      if (!stairOnSide(plan, i, east)) win(0, 0, 3.2, wall);
+      [-1, 1].forEach((k) => win(0, k * HALF_D * 0.775, HALF_D * 0.3, wall));
+      if (!stairOnSide(plan, i, east)) win(0, 0, HALF_D * 0.4, wall);
     });
 
     // --- the door (ground floor) ---
@@ -222,7 +231,7 @@ export function shell(b, plan, opts = {}) {
 
   // --- the roof slab of the top floor (its underside is the ceiling) ---
   const tl = plan.floors[last].top;
-  b.box(CEIL, 24, SLAB, 16, 0, tl + CLEAR, 0);
+  b.box(CEIL, 2 * HALF_W, SLAB, 2 * HALF_D, 0, tl + CLEAR, 0);
 }
 
 // One flight of stairs (from floor `k` up to floor `k + 1`): solid steps, a solid side wall and
@@ -267,11 +276,11 @@ export function addStairs(b, plan, k, opts = {}) {
     }
   };
   if (st.east) {
-    rail(ramp.x0 - 0.05, ramp.x0 - 0.05, -4, 4);
-    rail(ramp.x0, ramp.x1, 4.05, 4.05);
+    rail(ramp.x0 - 0.05, ramp.x0 - 0.05, -SH, SH);
+    rail(ramp.x0, ramp.x1, SH + 0.05, SH + 0.05);
   } else {
-    rail(ramp.x1 + 0.05, ramp.x1 + 0.05, -4, 4);
-    rail(ramp.x0, ramp.x1, -4.05, -4.05);
+    rail(ramp.x1 + 0.05, ramp.x1 + 0.05, -SH, SH);
+    rail(ramp.x0, ramp.x1, -SH - 0.05, -SH - 0.05);
   }
 }
 
